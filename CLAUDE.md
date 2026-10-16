@@ -26,13 +26,14 @@ metadata:
   scope: <what belongs on this page — and what does not>
 ---
 # <Title>
-## 现状        current state (rewrite, don't append)
-## 关键事实    hosts, IPs, paths, commands, configs, versions
-## 决策与踩坑  decisions, what failed, the user's preferences and rejections
-## 待办        open items
+## Current state         rewrite, don't append
+## Key facts             hosts, IPs, paths, commands, configs, versions
+## Decisions & pitfalls  decisions, what failed, the user's preferences and rejections
+## Open items            open items
 ```
-Only these four `##` sections (a date suffix like `## 现状（2026-10-11）` is fine); omit empty ones. The
-section names are fixed: `bin/lint.py` checks them (`SECTIONS`).
+Only these four `##` sections (a date suffix like `## Current state (2026-10-11)` is fine); omit empty ones.
+The section names are fixed: `bin/lint.py` checks them for the `language` set in `config.json` (this schema is
+for `"en"`; `"zh"` uses 现状 / 关键事实 / 决策与踩坑 / 待办, see `schema/CLAUDE.zh-CN.md`).
 One bullet = one fact, ≤ 300 chars per line — group with nested bullets, not long sentences.
 Claude Code's memory system adds `node_type`/`originSessionId`/`modified` under
 `metadata` when it writes here — that's expected; keep `scope` under `metadata` too. Write in the user's language.
@@ -41,9 +42,8 @@ Claude Code's memory system adds `node_type`/`originSessionId`/`modified` under
 
 - **Current, not chronological.** A topic page says what is true now. Superseded facts are deleted
   (git and log.md keep history). No session lists on topic pages — those go to log.md.
-- **Keep overturned decisions.** When a decision or belief is reversed, 决策与踩坑 keeps one line:
-  `曾以为/曾选 X → 因 Y 改为 Z (YYYY-MM-DD)` ("believed/chose X → changed to Z because Y"), so it isn't
-  re-proposed. Plain fact changes need no such line.
+- **Keep overturned decisions.** When a decision or belief is reversed, Decisions & pitfalls keeps one line:
+  `Was X → changed to Z because Y (YYYY-MM-DD)`, so it isn't re-proposed. Plain fact changes need no such line.
 - **Date volatile facts.** Facts that can go stale (running services, versions, external status, pending
   items) carry an absolute date `(YYYY-MM-DD)`. Stable facts (paths, preferences) don't need one.
 - **Index matches body.** A README line and a page's `description:` must agree with the page body;
@@ -61,13 +61,12 @@ Claude Code's memory system adds `node_type`/`originSessionId`/`modified` under
   the line doesn't cover → update the line in the same pass. Never park a topic in a domain whose
   MEMORY.md line wouldn't lead a reader there; move or create a domain instead.
 - **Renames propagate.** When something is renamed (a host, path, project), grep the whole wiki for
-  the old name and update every hit; keep the old name once only as `原 X` ("formerly X").
+  the old name and update every hit; keep the old name once only as `formerly X`.
 - **Conclusions, not process.** Experiment/debug pages keep the result, why, and the 2–3 numbers that
   justify it. Step-by-step timing breakdowns and trial logs go to log.md or stay in the transcript.
 - **No bookkeeping on pages.** Pages state facts, not how the writer judged them. Never write things like
-  "未见用户确认" (not confirmed by the user), "不声称…" (not claiming…), "（用户告知）" (as the user said). An
-  unconfirmed proposal is one 待办 line (`是否 X：已提议，用户未答复` — "whether X: proposed, no answer yet");
-  an unsupported claim is removed. `bin/lint.py` rejects these phrases.
+  "not confirmed by the user", "not claiming…", "(per the user)". An unconfirmed proposal is one Open items line
+  (`Whether X: proposed, no answer yet`); an unsupported claim is removed. `bin/lint.py` rejects these phrases.
 - **Near budget (≥ 80%) → the weekly LINT pass splits early** (`bin/lint.py --warn` lists them).
 - **Over budget → split or compress**, never just trim useful facts: split a topic into subtopics,
   split a crowded domain, move history to log.md.
@@ -90,8 +89,8 @@ Claude Code's memory system adds `node_type`/`originSessionId`/`modified` under
   `refs/<topic>.md` (e.g. `diffusion-refs`), 6–10 lines per paper/repository; pages that use it only link `[[...]]`.
 - Every entry starts with the verbatim arXiv id or repository `owner/name`, so it can be grepped; external
   repositories also note the commit/version and the date read.
-- Where things go: source, problem, 3–5 method bullets, key numbers, factual limitations → `关键事实`; what it
-  means for us, conclusions, reasons not to use it → `决策与踩坑`, conclusions dated (papers don't change,
+- Where things go: source, problem, 3–5 method bullets, key numbers, factual limitations → `Key facts`; what it
+  means for us, conclusions, reasons not to use it → `Decisions & pitfalls`, conclusions dated (papers don't change,
   conclusions do).
 - Notes are for judging and locating: before changing code or citing a specific number or detail, re-read the
   relevant passage of the original; when upstream moves, read only the diff.
@@ -110,7 +109,7 @@ Claude Code's memory system adds `node_type`/`originSessionId`/`modified` under
   - Dream, every night after the nightly or the weekly lint: a model reads what the user said since the last dream
     and keeps `misc/rule-candidates.md` (recurring corrections/preferences → rule candidates for the user to
     decide; never edits CLAUDE.md). Quotes are script-checked against the session they cite.
-  Every engine gets the same SOP prompts (`SOP_*`: requirements / rules / SOP / acceptance criteria); the script
+  Every engine gets the same SOP prompts, in the configured `language` (`SOP_*`: requirements / rules / SOP / acceptance criteria); the script
   checks acceptance itself (lint ok, a new `ingest|review | <sid8>` log entry per session, only wiki pages
   touched, log.md append-only, no mass deletion). Models edit a git worktree `.ingest-work`, never this working
   tree; an accepted commit is cherry-picked here and, if `remote` is set, pushed.

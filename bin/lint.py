@@ -4,8 +4,9 @@
   lint.py          check
   lint.py --stats  also print sizes per layer
   lint.py --warn   print only soft warnings (≥ WARN of a budget: split early, in the weekly LINT pass)
+  lint.py --language en|zh   page language; default: "language" in config.json, else en
 """
-import re, sys
+import json, re, sys
 from pathlib import Path
 
 WIKI = Path(__file__).resolve().parent.parent
@@ -14,9 +15,17 @@ MAX_TOPICS, README_LINE = 15, 120
 PAGE_LINES, PAGE_CHARS = 60, 4000
 WARN = 0.8
 BODY_LINE = 300  # one bullet = one fact; longer lines dodge PAGE_LINES and are unreadable
-SECTIONS = ("现状", "关键事实", "决策与踩坑", "待办")
-# verification bookkeeping that leaked onto a page instead of fixing the fact
-META = re.compile(r"不声称|未见用户确认|不记作现行|（用户告知）|\(用户告知\)|本会话中")
+# per page language: the four allowed sections, verification bookkeeping that leaked onto a page instead of
+# fixing the fact, and the session-list heading that belongs in log.md
+LANGUAGES = {
+    "zh": {"sections": ("现状", "关键事实", "决策与踩坑", "待办"),
+           "meta": re.compile(r"不声称|未见用户确认|不记作现行|（用户告知）|\(用户告知\)|本会话中"),
+           "sessions": "## 相关会话", "todo": "待办"},
+    "en": {"sections": ("Current state", "Key facts", "Decisions & pitfalls", "Open items"),
+           "meta": re.compile(r"not claiming|does not claim|not confirmed by the user|unconfirmed by the user|"
+                              r"not recorded as current|\((?:per the user|as the user said|user said)\)|in this session", re.I),
+           "sessions": "## Related sessions", "todo": "Open items"},
+}
 SPECIAL = {"misc"}
 TOOL_DIRS = {"bin", "launchd", "schema", "tests"}  # the tool's own directories in the repo, not wiki domains
 TOP_FILES = {"MEMORY.md", "CLAUDE.md", "log.md", "README.md", "README.zh-CN.md"}  # README*: the repo's own readme
@@ -33,7 +42,15 @@ def frontmatter(text):
     return dict(re.findall(r"^[ \t]*(\w+):[ \t]*(.+)$", m.group(1), re.M)) if m else None
 
 
-def check():
+def language():
+    if "--language" in sys.argv[:-1]:
+        return sys.argv[sys.argv.index("--language") + 1]
+    cfg = WIKI / "config.json"
+    return json.loads(cfg.read_text()).get("language", "en") if cfg.exists() else "en"
+
+
+def check(lang="en"):
+    SECTIONS, META = LANGUAGES[lang]["sections"], LANGUAGES[lang]["meta"]
     errs, stats, warns = [], [], []
     links = set()
     index = WIKI / "MEMORY.md"
@@ -81,7 +98,7 @@ def check():
                 errs.append(f"{d}/{name}: {n_lines} lines / {n_chars} chars > {PAGE_LINES}/{PAGE_CHARS}; split into subtopics or compress")
             elif max(n_lines / PAGE_LINES, n_chars / PAGE_CHARS) >= WARN:
                 warns.append(f"{d}/{name}: {n_lines}/{PAGE_LINES} lines, {n_chars}/{PAGE_CHARS} chars; split into subtopics")
-            if "## 相关会话" in text:
+            if LANGUAGES[lang]["sessions"] in text:
                 errs.append(f"{d}/{name}: session lists belong in log.md, not on topic pages")
             body = re.sub(r"\A---\n.*?\n---\n", "", text, flags=re.S)
             heads = re.findall(r"^## (.+)$", body, re.M)
@@ -94,7 +111,7 @@ def check():
                 if len(l) > BODY_LINE:
                     errs.append(f"{d}/{name}: body line {i} is {len(l)} chars > {BODY_LINE}; split into bullets or move detail to log.md")
                 if META.search(l):
-                    errs.append(f"{d}/{name}: body line {i} has verification bookkeeping ('{META.search(l).group()}'); state the fact or make it a 待办")
+                    errs.append(f"{d}/{name}: body line {i} has verification bookkeeping ('{META.search(l).group()}'); state the fact or make it a {LANGUAGES[lang]['todo']}")
             links.update((f"{d}/{name}", n) for n in WIKILINK.findall(body))
             stats.append(f"L2 {d}/{name}: {n_lines} lines, {n_chars} chars")
         stats.append(f"L1 {d}/README.md: {len(tops)} topics")
@@ -109,7 +126,10 @@ def check():
 
 
 if __name__ == "__main__":
-    errs, stats, warns = check()
+    lang = language()
+    if lang not in LANGUAGES:
+        sys.exit(f"unknown language {lang!r}: use {' or '.join(LANGUAGES)}")
+    errs, stats, warns = check(lang)
     if "--warn" in sys.argv:
         print("\n".join(warns))
         sys.exit(0)

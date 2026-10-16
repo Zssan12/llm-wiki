@@ -9,18 +9,22 @@ metadata:
   scope: demo facts
 ---
 # Demo
-## 现状
+## {section}
 {body}
 """
 
 
-class LintTest(unittest.TestCase):
+class LintZhTest(unittest.TestCase):
+    """Chinese pages: the four Chinese sections and bookkeeping phrases."""
+    language, section, other_section, bookkeeping = "zh", "现状", "Current state", "- 端口 8080（用户告知）"
+
     def setUp(self):
-        self.w = TempWiki()
+        self.w = TempWiki(config={"language": self.language})
         self.addCleanup(self.w.cleanup)
 
-    def add_page(self, name, body="- a fact", register=True, domain="misc"):
-        (self.w.wiki / domain / f"{name}.md").write_text(PAGE.format(name=name, body=body))
+    def add_page(self, name, body="- a fact", register=True, domain="misc", section=None):
+        (self.w.wiki / domain / f"{name}.md").write_text(
+            PAGE.format(name=name, body=body, section=section or self.section))
         if register:
             with open(self.w.wiki / domain / "README.md", "a") as f:
                 f.write(f"- [{name}]({name}.md) — demo page\n")
@@ -36,6 +40,15 @@ class LintTest(unittest.TestCase):
     def test_valid_page_passes(self):
         self.add_page("demo")
         self.assertLint(True, "lint ok")
+
+    def test_other_language_section_is_rejected(self):
+        self.add_page("demo", section=self.other_section)
+        self.assertLint(False, f"section '## {self.other_section}'")
+
+    def test_language_flag_overrides_config(self):
+        self.add_page("demo", section=self.other_section)
+        other = "en" if self.language == "zh" else "zh"
+        self.assertEqual(self.w.lint("--language", other).returncode, 0)
 
     def test_orphan_page(self):
         self.add_page("demo", register=False)
@@ -54,7 +67,7 @@ class LintTest(unittest.TestCase):
         self.assertLint(False, "body line")
 
     def test_bookkeeping_phrase(self):
-        self.add_page("demo", body="- 端口 8080（用户告知）")
+        self.add_page("demo", body=self.bookkeeping)
         self.assertLint(False, "verification bookkeeping")
 
     def test_missing_frontmatter(self):
@@ -82,6 +95,30 @@ class LintTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("misc/demo.md: ", r.stdout)
         self.assertIn("[[nowhere]] has no page yet", r.stdout)
+
+
+class LintEnTest(LintZhTest):
+    """English pages: the four English sections and bookkeeping phrases."""
+    language, section, other_section, bookkeeping = "en", "Current state", "现状", "- port 8080 (per the user)"
+
+
+class LintDefaultTest(unittest.TestCase):
+    def test_default_language_is_english(self):
+        w = TempWiki()
+        self.addCleanup(w.cleanup)
+        (w.wiki / "config.json").unlink()
+        self.assertEqual(w.lint().stdout.strip(), "lint ok")
+        (w.wiki / "misc" / "demo.md").write_text(PAGE.format(name="demo", body="- x", section="现状"))
+        with open(w.wiki / "misc" / "README.md", "a") as f:
+            f.write("- [demo](demo.md) — demo page\n")
+        self.assertIn("section '## 现状'", w.lint().stdout)
+
+    def test_unknown_language_is_refused(self):
+        w = TempWiki(config={"language": "fr"})
+        self.addCleanup(w.cleanup)
+        r = w.lint()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("unknown language 'fr'", r.stderr)
 
 
 if __name__ == "__main__":

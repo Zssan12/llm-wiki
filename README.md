@@ -28,8 +28,8 @@ log.md                    L3  dated history, session ids      (append-only, not 
 
 Claude reads only as deep as the question needs: `MEMORY.md` → `infra/README.md` → `infra/server.md`.
 Each topic page has a `scope:` that says what belongs there, so every fact has exactly one home. Pages
-use four fixed sections: `现状` (current state), `关键事实` (key facts), `决策与踩坑` (decisions and pitfalls)
-and `待办` (open items). The linter checks these names in both language versions of the schema.
+use four fixed sections: `Current state`, `Key facts`, `Decisions & pitfalls` and `Open items` (with
+`"language": "zh"`: `现状`, `关键事实`, `决策与踩坑`, `待办`). See [Language](#language).
 
 ## Pipeline
 
@@ -83,19 +83,20 @@ and `待办` (open items). The linter checks these names in both language versio
 
 1. **Clone** the repository. The clone becomes your wiki, so put it where you want the wiki to live:
    ```sh
-   git clone <this-repo-url> ~/wiki && cd ~/wiki
+   git clone https://github.com/zuiho-kai/llm-wiki ~/wiki && cd ~/wiki
    git remote rename origin upstream   # your wiki holds personal data: never push it to the public repo
    ```
-2. **Choose the schema language.** `CLAUDE.md` is the English schema (a copy of `schema/CLAUDE.md`). For
-   Chinese, use the Chinese schema instead:
-   ```sh
-   cp schema/CLAUDE.zh-CN.md CLAUDE.md && git commit -qam "schema: Chinese"
-   ```
-3. **Configure (optional).** Every key has a default. To change one, copy the example and edit it:
+2. **Configure.** Every key has a default, so this step is optional for English. Copy the example and edit it:
    ```sh
    cp config.example.json config.json   # git-ignored
    ```
    See [Configuration](#configuration).
+3. **Choose the language** before the first run. English (`"language": "en"`) is the default and needs nothing
+   more. For Chinese, set `"language": "zh"` in `config.json` and switch the schema:
+   ```sh
+   cp schema/CLAUDE.zh-CN.md CLAUDE.md && git commit -qam "schema: Chinese"
+   ```
+   See [Language](#language) for what this changes.
 4. **Connect Claude Code.** Add these entries to `~/.claude/settings.json`. Merge them with what is already
    there; do not replace the file:
    ```json
@@ -109,7 +110,7 @@ and `待办` (open items). The linter checks these names in both language versio
    }
    ```
 5. **Tell Claude how to use the wiki.** Append the memory instructions to your global `~/.claude/CLAUDE.md`,
-   in the language you chose in step 2:
+   in the language you chose in step 3:
    ```sh
    cat schema/global-memory.md >> ~/.claude/CLAUDE.md          # English
    cat schema/global-memory.zh-CN.md >> ~/.claude/CLAUDE.md    # 中文
@@ -126,8 +127,14 @@ and `待办` (open items). The linter checks these names in both language versio
    | `local.llm-wiki.weekly` | `ingest.py --lint` | Sunday 03:00 |
 
    On other platforms, set up the same three schedules with your own scheduler.
+
+   **The first run processes your whole history.** The first `--pending` run (the hook or the 30-minute
+   schedule) ingests every existing session in `transcripts` that has been idle for 30 minutes, not only new
+   ones. With a long history this can run for hours and use a large part of your model quota, and the nightly
+   run waits for it. Check what it will take with `python3 bin/ingest.py --status` before you load the agents.
 7. **Back up to a private remote (optional).** Add a private repository and set `"remote"` in `config.json`.
-   Each run then pulls with rebase before it starts and pushes accepted commits:
+   Each run then pulls with rebase before it starts and pushes accepted commits. A new, empty repository is
+   fine: the first run creates the branch there.
    ```sh
    git remote add origin <your-private-repo-url>
    ```
@@ -139,6 +146,20 @@ and `待办` (open items). The linter checks these names in both language versio
 
 If you change the wiki path, change it in all three places: the `autoMemoryDirectory` setting, the hook
 command and the global memory block. The launchd templates take the path from where `install.sh` is.
+
+## Language
+
+`language` in `config.json` is `"en"` (default) or `"zh"`. It sets:
+
+- the step-by-step prompts sent to the models (`SOP_*_EN` or `SOP_*_ZH` in `bin/ingest.py`), so pages are
+  written in that language;
+- the four section names `bin/lint.py` accepts: `Current state` / `Key facts` / `Decisions & pitfalls` /
+  `Open items`, or `现状` / `关键事实` / `决策与踩坑` / `待办`;
+- the bookkeeping phrases `bin/lint.py` rejects (for example "(per the user)" or "（用户告知）").
+
+Use the matching schema (`CLAUDE.md` = `schema/CLAUDE.md` for English, `schema/CLAUDE.zh-CN.md` for Chinese) and
+the matching memory block (`schema/global-memory*.md`). `bin/lint.py --language en|zh` overrides the setting for
+one run. If you switch later, existing pages keep their old section names and fail lint until you rename them.
 
 ## Configuration
 
@@ -164,6 +185,7 @@ command and the global memory block. The launchd templates take the path from wh
 | `rule_files` | `["~/.claude/CLAUDE.md"]` | resident rule files that dream and the weekly lint read (never edit) |
 | `remote` | `""` | git remote to pull from and push to (`""` = local only) |
 | `proxy` | `""` | HTTP(S) proxy tried first for pull/push, then a direct connection |
+| `language` | `"en"` | `"en"` or `"zh"`: model prompts, page section names, lint phrases ([Language](#language)) |
 
 Engine names: `haiku`, `sonnet`, `opus` (or any model name the `claude` CLI accepts), `claude`
 (= `claude_model`), `codex` or `codex:<effort>` (for example `codex:high`), and `agy`. All engines get the
@@ -179,7 +201,7 @@ ingest.py --nightly        night run: leftovers, split, dream, review
 ingest.py --lint           weekly lint, then dream
 ingest.py --status         list sessions with new content
 ingest.py --usage [DAYS]   token use per day and model
-lint.py [--stats|--warn]   structural check / sizes / near-budget warnings
+lint.py [--stats|--warn] [--language en|zh]   structural check / sizes / near-budget warnings
 ```
 
 Runtime files (all git-ignored) sit in the wiki root: `.ingest.log`, `.ingest.sqlite`, `.ingest-usage.tsv`,
@@ -199,7 +221,7 @@ python3 -m unittest discover -s tests -v
 
 The ingest tests run the real pipeline against a stand-in `claude` CLI (`tests/fake-engine/claude`). The fake
 writes pages the way a model would, so the tests cover acceptance, rejection, fallback, the hook, the nightly
-review and the dream quote check, with no model calls.
+review, the dream quote check and the first push to an empty remote, in both languages, with no model calls.
 
 ## License
 

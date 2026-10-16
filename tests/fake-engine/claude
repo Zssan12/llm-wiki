@@ -17,6 +17,8 @@ task = instruction.split()[0] if instruction else "?"
 if os.environ.get("FAKE_CALLS"):
     with open(os.environ["FAKE_CALLS"], "a") as f:
         f.write(f"{model} {task}\n")
+    with open(os.environ["FAKE_CALLS"] + ".prompts", "a") as f:  # first line of each prompt: shows its language
+        f.write(instruction.splitlines()[0] + "\n")
 
 
 def reply(text, rc=0):
@@ -29,6 +31,7 @@ if mode == "fail-haiku" and model == "haiku":
     reply("simulated failure", 1)
 
 wiki, today = Path.cwd(), time.strftime("%Y-%m-%d")
+KEY = "## 关键事实" if "任务" in instruction else "## Key facts"  # the Chinese SOP prompts say 任务, the English ones "task"
 sessions = re.findall(r"=== SESSION ([0-9a-f]{8}) \| (.*?) \|", context)
 
 
@@ -49,7 +52,7 @@ if task == "INGEST":
     users = re.findall(r"^USER: (.+)$", context, re.M)
     page = wiki / "misc" / "demo-facts.md"
     page.write_text("---\nname: demo-facts\ndescription: facts from the demo session\nmetadata:\n"
-                    "  scope: facts the demo transcript states\n---\n# Demo facts\n## 关键事实\n"
+                    "  scope: facts the demo transcript states\n---\n# Demo facts\n" + KEY + "\n"
                     + "".join(f"- {u[:200]}\n" for u in users))
     register("demo-facts", "facts from the demo session")
     if mode != "no-log":
@@ -76,7 +79,7 @@ elif task == "DREAM":
     page = wiki / "misc" / "rule-candidates.md"
     page.write_text("---\nname: rule-candidates\ndescription: rule candidates from dream\nmetadata:\n"
                     "  scope: recurring corrections and preferences for the user to decide\n---\n# Rule candidates\n"
-                    "## 关键事实\n" + "".join(f"- {d} {s} 偏好：「{q}」\n" for d, s, q in quotes))
+                    + KEY + "\n" + "".join(f"- {d} {s} 偏好：「{q}」\n" for d, s, q in quotes))
     register("rule-candidates", "rule candidates from dream")
     with open(wiki / "log.md", "a") as f:
         f.write(f"\n## [{today}] dream\n- misc/rule-candidates: {len(quotes)} candidate(s)\n")

@@ -8,9 +8,12 @@ DEMO = [("user", "The staging server is reachable as demo-staging over SSH, port
         ("user", "Always run the linter before committing.")]
 
 
-class IngestTest(unittest.TestCase):
+class IngestZhTest(unittest.TestCase):
+    """Runs the pipeline with language "zh": Chinese SOP prompts, Chinese page sections."""
+    language, key_section, task_word = "zh", "## 关键事实", "任务"
+
     def setUp(self):
-        self.w = TempWiki()
+        self.w = TempWiki(config={"language": self.language})
         self.addCleanup(self.w.cleanup)
         self.sid = self.w.session(DEMO)
         self.sid8 = self.sid[:8]
@@ -31,12 +34,15 @@ class IngestTest(unittest.TestCase):
         self.assertIn(f"ingest {self.sid8}", self.w.commits())
         page = (self.w.wiki / "misc" / "demo-facts.md").read_text()
         self.assertIn("demo-staging", page)
+        self.assertIn(self.key_section, page)
         self.assertIn(f"ingest | {self.sid8} Demo session", (self.w.wiki / "log.md").read_text())
         self.assertEqual(self.w.lint().returncode, 0)
         self.assertEqual(git(self.w.wiki, "status", "--porcelain"), "")  # delivered as a commit, tree clean
         self.assertEqual(self.db("ingested")[self.sid], self.size())
         self.assertNotIn("REVERTED", self.w.log_text())
         self.assertEqual(self.w.calls_made(), ["haiku INGEST"])
+        prompt = (self.w.tmp / "calls.txt.prompts").read_text()
+        self.assertTrue(prompt.startswith(f"INGEST {self.task_word}"), prompt)
         # nothing new: a second run makes no model call
         self.w.ingest("--pending")
         self.assertEqual(self.w.calls_made(), ["haiku INGEST"])
@@ -97,7 +103,40 @@ class IngestTest(unittest.TestCase):
         self.assertIn(self.sid, r.stdout)
 
 
+class IngestEnTest(IngestZhTest):
+    """Runs the pipeline with language "en": English SOP prompts, English page sections."""
+    language, key_section, task_word = "en", "## Key facts", "task"
+
+
+class RemoteTest(unittest.TestCase):
+    def test_first_run_pushes_to_an_empty_remote(self):
+        w = TempWiki(config={"remote": "origin"})
+        self.addCleanup(w.cleanup)
+        bare = w.tmp / "remote.git"
+        git(w.tmp, "init", "-q", "--bare", str(bare))
+        git(w.wiki, "remote", "add", "origin", str(bare))
+        sid = w.session(DEMO)
+        r = w.ingest("--session", sid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        head = git(w.wiki, "rev-parse", "HEAD")
+        self.assertIn(head, git(w.tmp, "ls-remote", str(bare)))
+        self.assertNotIn("FAILED", w.log_text())
+        # second run: the branch now exists on the remote; pull and push again
+        sid2 = w.session(DEMO)
+        w.ingest("--session", sid2)
+        self.assertIn(f"ingest {sid2[:8]}", w.commits())
+        self.assertIn(git(w.wiki, "rev-parse", "HEAD"), git(w.tmp, "ls-remote", str(bare)))
+        self.assertNotIn("FAILED", w.log_text())
+
+
 class ConfigTest(unittest.TestCase):
+    def test_unknown_language_is_refused(self):
+        w = TempWiki(config={"language": "fr"})
+        self.addCleanup(w.cleanup)
+        r = w.ingest("--status")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("language must be", r.stderr)
+
     def test_unknown_key_is_refused(self):
         w = TempWiki(config={"no_such_key": 1})
         self.addCleanup(w.cleanup)

@@ -27,7 +27,8 @@ log.md                    L3  带日期的历史、会话 id            （只�
 
 Claude 只读到问题需要的深度：`MEMORY.md` → `infra/README.md` → `infra/server.md`。
 每个主题页有一个 `scope:`，写明哪些内容属于这一页，所以每个事实只有一个归属。页面固定用四节：
-`现状`、`关键事实`、`决策与踩坑`、`待办`。两种语言的 schema 都用这四个节名，linter 按它们检查。
+`Current state`、`Key facts`、`Decisions & pitfalls`、`Open items`（设 `"language": "zh"` 时是 `现状`、`关键事实`、
+`决策与踩坑`、`待办`）。见[语言](#语言)。
 
 ## 流水线
 
@@ -75,18 +76,20 @@ Claude 只读到问题需要的深度：`MEMORY.md` → `infra/README.md` → `i
 
 1. **Clone** 仓库。clone 下来的目录就是你的 wiki，放在你想放 wiki 的位置：
    ```sh
-   git clone <本仓库地址> ~/wiki && cd ~/wiki
+   git clone https://github.com/zuiho-kai/llm-wiki ~/wiki && cd ~/wiki
    git remote rename origin upstream   # wiki 里是个人数据：绝不要 push 到公开仓库
    ```
-2. **选 schema 语言。** `CLAUDE.md` 默认是英文 schema（`schema/CLAUDE.md` 的副本）。要用中文就换成中文版：
-   ```sh
-   cp schema/CLAUDE.zh-CN.md CLAUDE.md && git commit -qam "schema: Chinese"
-   ```
-3. **配置（可选）。** 每一项都有默认值。要改的话，复制示例再编辑：
+2. **配置。** 每一项都有默认值，用英文时这一步可以跳过。复制示例再编辑：
    ```sh
    cp config.example.json config.json   # 已被 git 忽略
    ```
    见[配置项](#配置项)。
+3. **选语言**，要在第一次运行之前选。默认是英文（`"language": "en"`），不用做别的。用中文：在 `config.json`
+   里设 `"language": "zh"`，并换成中文 schema：
+   ```sh
+   cp schema/CLAUDE.zh-CN.md CLAUDE.md && git commit -qam "schema: Chinese"
+   ```
+   选完会改变什么，见[语言](#语言)。
 4. **接入 Claude Code。** 把下面几项加进 `~/.claude/settings.json`。和已有内容合并，不要覆盖整个文件：
    ```json
    {
@@ -98,7 +101,7 @@ Claude 只读到问题需要的深度：`MEMORY.md` → `infra/README.md` → `i
      }
    }
    ```
-5. **告诉 Claude 怎么用 wiki。** 把记忆指令追加到全局 `~/.claude/CLAUDE.md`，语言和第 2 步一致：
+5. **告诉 Claude 怎么用 wiki。** 把记忆指令追加到全局 `~/.claude/CLAUDE.md`，语言和第 3 步一致：
    ```sh
    cat schema/global-memory.zh-CN.md >> ~/.claude/CLAUDE.md   # 中文
    cat schema/global-memory.md >> ~/.claude/CLAUDE.md         # English
@@ -114,8 +117,12 @@ Claude 只读到问题需要的深度：`MEMORY.md` → `infra/README.md` → `i
    | `local.llm-wiki.weekly` | `ingest.py --lint` | 周日 03:00 |
 
    其他平台用自己的定时工具配同样三项。
+
+   **第一次运行会处理全部历史。** 第一次 `--pending`（hook 或每 30 分钟的定时任务）会写入 `transcripts` 下所有
+   空闲满 30 分钟的已有会话，不只是新会话。历史长的话可能连跑好几个小时，消耗一大块模型额度，期间夜间任务要等它跑完。
+   加载定时任务前，先用 `python3 bin/ingest.py --status` 看看有多少会话要处理。
 7. **备份到私有远端（可选）。** 加一个私有仓库，并在 `config.json` 里设 `"remote"`。之后每次运行前先 rebase 拉取，
-   验收通过的提交会 push 上去：
+   验收通过的提交会 push 上去。新建的空仓库也可以，第一次运行会在远端建好分支：
    ```sh
    git remote add origin <你的私有仓库地址>
    ```
@@ -127,6 +134,19 @@ Claude 只读到问题需要的深度：`MEMORY.md` → `infra/README.md` → `i
 
 如果换了 wiki 路径，三处都要改：`autoMemoryDirectory` 设置、hook 命令、全局记忆指令。launchd 模板的路径取自
 `install.sh` 所在位置。
+
+## 语言
+
+`config.json` 里的 `language` 取 `"en"`（默认）或 `"zh"`。它决定：
+
+- 发给模型的分步提示（`bin/ingest.py` 里的 `SOP_*_EN` 或 `SOP_*_ZH`），页面也就用这种语言写；
+- `bin/lint.py` 接受的四个节名：`Current state` / `Key facts` / `Decisions & pitfalls` / `Open items`，
+  或 `现状` / `关键事实` / `决策与踩坑` / `待办`；
+- `bin/lint.py` 拦截的批注用语（比如 "(per the user)" 或「（用户告知）」）。
+
+schema 和记忆指令要用同一种语言：英文用 `CLAUDE.md`（= `schema/CLAUDE.md`），中文用 `schema/CLAUDE.zh-CN.md`；
+记忆指令用对应的 `schema/global-memory*.md`。`bin/lint.py --language en|zh` 可以临时覆盖一次。以后再换语言，
+已有页面还是旧节名，要手动改名才能过 lint。
 
 ## 配置项
 
@@ -152,6 +172,7 @@ Claude 只读到问题需要的深度：`MEMORY.md` → `infra/README.md` → `i
 | `rule_files` | `["~/.claude/CLAUDE.md"]` | dream 和每周 lint 读取的常驻规则文件（只读不改） |
 | `remote` | `""` | pull/push 用的 git 远端（`""` = 只在本地） |
 | `proxy` | `""` | pull/push 先试的 HTTP(S) 代理，失败再直连 |
+| `language` | `"en"` | `"en"` 或 `"zh"`：模型提示、页面节名、lint 用语（见[语言](#语言)） |
 
 引擎名：`haiku`、`sonnet`、`opus`（或 `claude` CLI 接受的任何模型名）、`claude`（= `claude_model`）、
 `codex` 或 `codex:<effort>`（如 `codex:high`）、`agy`。所有引擎用同一套分步提示（`bin/ingest.py` 里的 `SOP_*`），
@@ -167,7 +188,7 @@ ingest.py --nightly        夜间运行：补写、拆分、dream、复核
 ingest.py --lint           每周整理，然后 dream
 ingest.py --status         列出有新内容的会话
 ingest.py --usage [DAYS]   按天、按模型统计 token 用量
-lint.py [--stats|--warn]   结构检查 / 各层大小 / 接近预算的警告
+lint.py [--stats|--warn] [--language en|zh]   结构检查 / 各层大小 / 接近预算的警告
 ```
 
 运行时文件都在 wiki 根目录，都已被 git 忽略：`.ingest.log`、`.ingest.sqlite`、`.ingest-usage.tsv`、`.ingest.lock`、
@@ -185,7 +206,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 写入测试用一个假的 `claude` CLI（`tests/fake-engine/claude`）跑真实流水线。假引擎像模型一样写页面，
-测试覆盖验收通过、拒收、兜底引擎、hook、夜间复核和 dream 引文核对，不调用任何模型。
+测试在两种语言下覆盖验收通过、拒收、兜底引擎、hook、夜间复核、dream 引文核对和第一次 push 到空远端，不调用任何模型。
 
 ## 许可证
 

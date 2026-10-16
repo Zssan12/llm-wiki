@@ -11,10 +11,15 @@
   "codex_models": [],
   "codex_effort": "max",
   "codex_tier": "",
-  "after_codex": ["haiku"],
+  "after_codex": [
+    "haiku"
+  ],
   "agy_model": "gemini-3.8-flash-high",
   "night_budget": 18000,
-  "rule_files": ["~/.claude/CLAUDE.md"],
+  "rule_files": [
+    "~/.claude/CLAUDE.md"
+  ],
   "remote": "",
-  "proxy": ""
+  "proxy": "",
+  "language": "en"
 }

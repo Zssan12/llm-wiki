@@ -31,7 +31,8 @@ metadata:
 ## 待办        未完成的事
 ```
 只用这四个 `##` 节（可以带日期后缀，如 `## 现状（2026-10-11）`）；空节省略。节名是固定的：`bin/lint.py`
-按 `SECTIONS` 检查。
+按 `config.json` 里的 `language` 检查（本 schema 对应 `"zh"`；`"en"` 用 Current state / Key facts / Decisions & pitfalls /
+Open items，见 `schema/CLAUDE.md`）。
 一条 bullet 一个事实，每行 ≤ 300 字符；用嵌套 bullet 分组，不写长句。
 Claude Code 的记忆系统写入时会在 `metadata` 下加 `node_type`/`originSessionId`/`modified`，这是正常的；
 `scope` 也放在 `metadata` 下。用用户的语言写。
@@ -90,7 +91,7 @@ Claude Code 的记忆系统写入时会在 `metadata` 下加 `node_type`/`origin
   - 每周，周日 03:00 `--lint`：lint 引擎整理整个 wiki。
   - Dream：每晚在 nightly 或周 lint 之后，读上次 dream 以来用户说的话，维护 `misc/rule-candidates.md`
     （反复出现的纠正/偏好 → 规则候选，由用户决定；从不改 CLAUDE.md）。引文由脚本对照所引会话核对。
-  所有引擎用同一套 SOP 提示（`SOP_*`：要求 / 规则 / SOP / 验收标准）；脚本自己验收（lint ok、每个会话一条新的
+  所有引擎用同一套 SOP 提示（语言随 `language` 配置）（`SOP_*`：要求 / 规则 / SOP / 验收标准）；脚本自己验收（lint ok、每个会话一条新的
   `ingest|review | <sid8>` 日志、只动 wiki 页面、log.md 只追加、没有大量删除）。模型在 git worktree `.ingest-work`
   里改，从不碰本工作区；验收通过的提交 cherry-pick 到这里，配置了 `remote` 时再 push。
 - `bin/lint.py`：结构检查（预算、frontmatter、孤儿页、允许的节、行长、批注用语）。有违规时退出码 1。
