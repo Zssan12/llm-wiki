@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Stand-in for the `claude` CLI in tests: pretends to be a model that edits the wiki in its working directory.
+
+Behaviour is chosen by FAKE_MODE (good | touch-schema | no-log | fail-haiku | dream-misquote); every call is
+appended to FAKE_CALLS (if set) as "<model> <task>" so tests can see which engines ran.
+"""
+import json, os, re, sys, time
+from pathlib import Path
+
+args = sys.argv[1:]
+opt = lambda name: args[args.index(name) + 1] if name in args else ""
+instruction, model = opt("-p"), opt("--model")
+ctx_file = opt("--append-system-prompt-file")
+context = Path(ctx_file).read_text() if ctx_file else ""
+mode = os.environ.get("FAKE_MODE", "good")
+task = instruction.split()[0] if instruction else "?"
+if os.environ.get("FAKE_CALLS"):
+    with open(os.environ["FAKE_CALLS"], "a") as f:
+        f.write(f"{model} {task}\n")
+
+
+def reply(text, rc=0):
+    print(json.dumps({"result": text, "total_cost_usd": 0, "num_turns": 1,
+                      "modelUsage": {model: {"inputTokens": 10, "outputTokens": 5}}}))
+    sys.exit(rc)
+
+
+if mode == "fail-haiku" and model == "haiku":
+    reply("simulated failure", 1)
+
+wiki, today = Path.cwd(), time.strftime("%Y-%m-%d")
+sessions = re.findall(r"=== SESSION ([0-9a-f]{8}) \| (.*?) \|", context)
+
+
+def append_log(kind):
+    with open(wiki / "log.md", "a") as f:
+        for sid, title in sessions:
+            f.write(f"\n## [{today}] {kind} | {sid} {title}\n- misc/demo-facts: {kind} by fake engine\n")
+
+
+def register(name, line):
+    readme = wiki / "misc" / "README.md"
+    if f"({name}.md)" not in readme.read_text():
+        with open(readme, "a") as f:
+            f.write(f"- [{name}]({name}.md) — {line}\n")
+
+
+if task == "INGEST":
+    users = re.findall(r"^USER: (.+)$", context, re.M)
+    page = wiki / "misc" / "demo-facts.md"
+    page.write_text("---\nname: demo-facts\ndescription: facts from the demo session\nmetadata:\n"
+                    "  scope: facts the demo transcript states\n---\n# Demo facts\n## 关键事实\n"
+                    + "".join(f"- {u[:200]}\n" for u in users))
+    register("demo-facts", "facts from the demo session")
+    if mode != "no-log":
+        append_log("ingest")
+    if mode == "touch-schema":
+        with open(wiki / "CLAUDE.md", "a") as f:
+            f.write("\nedited by a model\n")
+    reply("misc/demo-facts.md: added")
+elif task == "REVIEW":
+    append_log("review")
+    reply("无修改")
+elif task == "DREAM":
+    quotes = []
+    sid = None
+    for line in context.splitlines():
+        m = re.match(r"=== SESSION ([0-9a-f]{8})", line)
+        if m:
+            sid = m.group(1)
+        m = re.match(r"USER \[(\d\d-\d\d)\]: (.+)", line)
+        if m and sid:
+            quotes.append((m.group(1), sid, m.group(2)[:20]))
+    if mode == "dream-misquote":
+        quotes = [(d, s, "the user never said this") for d, s, _ in quotes]
+    page = wiki / "misc" / "rule-candidates.md"
+    page.write_text("---\nname: rule-candidates\ndescription: rule candidates from dream\nmetadata:\n"
+                    "  scope: recurring corrections and preferences for the user to decide\n---\n# Rule candidates\n"
+                    "## 关键事实\n" + "".join(f"- {d} {s} 偏好：「{q}」\n" for d, s, q in quotes))
+    register("rule-candidates", "rule candidates from dream")
+    with open(wiki / "log.md", "a") as f:
+        f.write(f"\n## [{today}] dream\n- misc/rule-candidates: {len(quotes)} candidate(s)\n")
+    reply("misc/rule-candidates.md: added")
+else:  # LINT, SPLIT, FIX: nothing to change
+    reply("lint clean")

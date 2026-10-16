@@ -1,0 +1,20 @@
+{
+  "transcripts": "~/.claude/projects",
+  "ingest_engine": "haiku",
+  "fallback_engine": "sonnet",
+  "night_engine": "sonnet",
+  "review_engine": "sonnet",
+  "lint_engine": "sonnet",
+  "dream_engine": "sonnet",
+  "split_engine": "sonnet",
+  "claude_model": "sonnet",
+  "codex_models": [],
+  "codex_effort": "max",
+  "codex_tier": "",
+  "after_codex": ["haiku"],
+  "agy_model": "gemini-3.8-flash-high",
+  "night_budget": 18000,
+  "rule_files": ["~/.claude/CLAUDE.md"],
+  "remote": "",
+  "proxy": ""
+}
