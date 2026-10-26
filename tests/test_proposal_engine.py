@@ -149,6 +149,47 @@ class StoreTest(unittest.TestCase):
         self.assertIsNot(r1, r2)
         self.assertEqual(len(self.store.records), 2)
 
+    def test_url_and_lowercase_protocol_variants_do_not_merge(self):
+        self.assertEqual(pe._key_tokens("访问 https://example.com"),
+                         {"https://example.com"})
+        cases = [
+            ("访问 https://example.com", "访问 http://example.com"),
+            ("Deploy to https://prod.example.com", "Deploy to https://staging.example.com"),
+            ("Use https for all external URLs", "Use http for all external URLs"),
+        ]
+        for a, b in cases:
+            with self.subTest(a=a):
+                self.assertFalse(pe.similar_draft(a, b))
+        r1 = self.store.add("访问 https://example.com", None,
+                            [occ("10-25", "12345678", "访问 https://example.com")],
+                            key="url-https")
+        r2 = self.store.add("访问 http://example.com", None,
+                            [occ("10-26", "87654321", "访问 http://example.com")],
+                            key="url-http")
+        self.assertIsNot(r1, r2)
+        self.assertEqual(len(self.store.records), 2)
+
+    def test_bare_bu_wei_negation_blocks_merge(self):
+        cases = [
+            ("不合并到主分支", "合并到主分支"),
+            ("不提交未完成的代码", "提交未完成的代码"),
+            ("未完成迁移前先备份", "完成迁移前先备份"),
+            ("不明显的问题先记录", "明显的问题先记录"),
+            ("Nothing should be deleted", "Something should be deleted"),
+        ]
+        for a, b in cases:
+            with self.subTest(a=a):
+                self.assertTrue(pe.has_negation(a))
+                self.assertFalse(pe.similar_draft(a, b))
+        r1 = self.store.add("不合并到主分支", None,
+                            [occ("10-25", "12345678", "不合并到主分支")],
+                            key="no-merge")
+        r2 = self.store.add("合并到主分支", None,
+                            [occ("10-26", "87654321", "合并到主分支")],
+                            key="merge")
+        self.assertIsNot(r1, r2)
+        self.assertEqual(len(self.store.records), 2)
+
     def test_positive_words_with_negation_characters_still_merge(self):
         cases = [
             ("不同项目使用不同端口", "不同项目使用不同的端口"),

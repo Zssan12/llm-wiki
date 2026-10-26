@@ -129,6 +129,7 @@ PROPOSAL_ENGINE = bool(CFG["proposal_engine"])
 STATE_DIR = REPO / "state"
 PROPOSALS_REL = "misc/rule-candidates.json"
 PROPOSALS = REPO / PROPOSALS_REL
+README_REL = "misc/README.md"
 PROPOSAL_PATCHES = STATE_DIR / "proposals"
 # repository files that are not wiki pages: a model pass touching them is rejected
 NOT_PAGES = ("bin/", "launchd/", "schema/", "tests/", ".")
@@ -1782,19 +1783,43 @@ def _work_text(path):
     return p.read_text() if p.exists() else None
 
 
+def _readme_was_deleted():
+    """True when HEAD lacks misc/README.md but a reachable commit deleted it."""
+    try:
+        deleted = _git_run(["log", "--format=%H", "--diff-filter=D", "HEAD",
+                            "--", README_REL])
+    except RuntimeError:
+        return False
+    return bool(deleted.strip())
+
+
+def _readme_was_registered():
+    """True when tracked generated state shows misc/README.md should exist.
+
+    The proposal page/records are written only after the README was registered;
+    their presence with a missing README is another signal that the user deleted
+    it rather than that the wiki never had one."""
+    return (REPO / proposal_engine.PAGE).exists() or PROPOSALS.exists()
+
+
 def require_readme_not_deleted():
-    """Refuse accept/reject when the user deleted misc/README.md but HEAD has it.
+    """Refuse accept/reject when the user deleted misc/README.md.
 
     ``publish()`` calls ``ensure_registered()``, which would recreate the file and
-    silently discard the user's deletion (PR review P1).  The user must restore
-    the file or commit the deletion before deciding a proposal."""
-    path = "misc/README.md"
-    head = _git_text(path)
-    if head is None:
+    silently discard the user's deletion (PR review P1).  A missing HEAD entry is
+    not proof the file never existed: check reachable history and generated state
+    as well, so a committed deletion is not mistaken for a fresh wiki."""
+    head = _git_text(README_REL)
+    index = _index_text(README_REL)
+    work = _work_text(README_REL)
+    if head is not None:
+        if index is None or work is None:
+            raise RuntimeError(f"{README_REL} is deleted in the index or working tree; "
+                               "restore it before accept/reject")
         return
-    if _index_text(path) is None or _work_text(path) is None:
-        raise RuntimeError(f"{path} is deleted in the index or working tree; "
-                           "restore it or commit the deletion before accept/reject")
+    if (index is None or work is None) and (_readme_was_deleted() or _readme_was_registered()):
+        raise RuntimeError(f"{README_REL} was deleted earlier (or is registered); "
+                           "restore it before accept/reject")
 
 
 def _git_blob(text):
@@ -1890,7 +1915,7 @@ def _proposal_output(label, before_json, page, page_changed, readme_changed):
     if after_json is not None and after_json != before_json:
         contents[PROPOSALS_REL] = after_json
     if readme_changed:
-        readme_rel = "misc/README.md"
+        readme_rel = README_REL
         head_readme = _git_text(readme_rel)
         head_base = head_readme if head_readme is not None else "# misc\n"
         commit_readme = proposal_engine.registered_text(head_base, LANGUAGE)

@@ -43,13 +43,20 @@ MIN_SYNONYM_CHARS = 6
 NEGATION_ZH = re.compile(
     r"(?:不要|不能|不得|不用|不必|不需|不准|不许|不可|不该|不应|不建议|不推荐|不允许|"
     r"无需|禁止|切勿|勿|严禁|避免|尚未|并未|从未|还未|未能|没有|千万别|别忘记)"
-    r"|(?:^|[，。；：、！？\s])别(?!人|的|处|致|墅|称|名)")
+    r"|(?:^|[，。；：、！？\s])别(?!人|的|处|致|墅|称|名)"
+    # source: PR review P2 — bare 不/未 before a verb or adjective is a negation
+    # ("不合并", "未完成"); the listed lexicalized positive words (不同/不错/未来/…)
+    # stay positive.
+    r"|(?:不|未)(?!(?:同|错|少|断|久|仅|但|愧|亚|丹|菲|二|妨|免|惜|无|日|列|来|然|几))"
+    r"(?=[\u4e00-\u9fff])")
 NEGATION_EN = re.compile(
-    r"\b(?:not|never|no|none|without|cannot|can't|don't|doesn't|didn't|shouldn't|"
-    r"mustn't|won't|wouldn't|isn't|aren't|avoid)\b", re.IGNORECASE)
+    r"\b(?:not|never|no|none|nothing|nobody|neither|nor|nowhere|without|cannot|"
+    r"can't|don't|doesn't|didn't|shouldn't|mustn't|won't|wouldn't|isn't|aren't|avoid)\b",
+    re.IGNORECASE)
 # source: PR review P2 — HTTPS/HTTP differ by one technical token but are opposite
 # rules; the approximate fallback must require such key tokens to match exactly.
-KEY_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9]*(?://[^\s]+)?")
+KEY_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*(?::\/\/[^\s]+)?")
+PROTOCOL_TOKEN = re.compile(r"^(?:https?|ftps?|sftp|ssh|wss?)$", re.IGNORECASE)
 # source: PR review P2 — Chinese structural particles do not change a rule's meaning
 # (不同项目使用不同的端口 / 不同项目使用不同端口; 特别小心地备份 / 特别小心备份).
 SIMILARITY_PARTICLES = re.compile(r"[的地得了]")
@@ -82,6 +89,8 @@ def _key_tokens(text):
     for raw in KEY_TOKEN.findall(unicodedata.normalize("NFKC", str(text or ""))):
         token = raw.rstrip(".,;:!?)]}\"'")
         if "://" in token:
+            tokens.add(token.lower())
+        elif PROTOCOL_TOKEN.match(token):
             tokens.add(token.lower())
         elif token.isupper() and len(token) >= 2:
             tokens.add(token)

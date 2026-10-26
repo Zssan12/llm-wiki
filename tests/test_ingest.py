@@ -373,6 +373,38 @@ class RegressionTest(unittest.TestCase):
         self.assertIn("D  misc/README.md", git(self.w.wiki, "status", "--porcelain"))
         self.assertEqual(self.proposal_status(record["id"]), "open")
 
+    def committed_readme_deletion(self):
+        record = self.proposal_fixture()
+        readme = self.w.wiki / "misc" / "README.md"
+        self.assertTrue(readme.exists())
+        git(self.w.wiki, "rm", "-q", "misc/README.md")
+        git(self.w.wiki, "commit", "-qm", "user deletes readme")
+        return record, readme
+
+    def test_proposals_accept_refuses_committed_readme_deletion(self):
+        record, readme = self.committed_readme_deletion()
+        head = git(self.w.wiki, "rev-parse", "HEAD")
+        r = self.w.ingest("proposals", "accept", record["id"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("misc/README.md", r.stderr)
+        self.assertIn("deleted", r.stderr)
+        self.assertFalse(readme.exists())
+        self.assertEqual(git(self.w.wiki, "status", "--porcelain"), "")
+        self.assertEqual(git(self.w.wiki, "rev-parse", "HEAD"), head)
+        self.assertEqual(self.proposal_status(record["id"]), "open")
+
+    def test_proposals_reject_refuses_committed_readme_deletion(self):
+        record, readme = self.committed_readme_deletion()
+        head = git(self.w.wiki, "rev-parse", "HEAD")
+        r = self.w.ingest("proposals", "reject", record["id"], "not applicable")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("misc/README.md", r.stderr)
+        self.assertIn("deleted", r.stderr)
+        self.assertFalse(readme.exists())
+        self.assertEqual(git(self.w.wiki, "status", "--porcelain"), "")
+        self.assertEqual(git(self.w.wiki, "rev-parse", "HEAD"), head)
+        self.assertEqual(self.proposal_status(record["id"]), "open")
+
     def test_review_cannot_delete_a_protected_page(self):
         sid = self.w.session([("user", "The staging server SSH port is 2222.")])
         self.w.ingest("--session", sid)
