@@ -58,10 +58,12 @@ use four fixed sections: `Current state`, `Key facts`, `Decisions & pitfalls` an
 - **Night (`--nightly`).** The night engine ingests what the day left. Then the **Diff Engine** reads each
   transcript span that was ingested during the day, together with the diff the day pass wrote, one added fact
   line at a time. Script checks run first: every `「quote」` and every "the user said / decided" line must match a
-  USER line of the cited session, and conflicts between pages are listed. A model then gives each line one
+  USER line of the cited session, and conflicts between pages are listed as hints (not verdicts: similar
+  templates on different pages can be false positives). A model then gives each line one
   verdict — `supported`, `contradicted`, `stale`, `misattributed` or `unsupported` — with sid8 + quote
   evidence. Only `misattributed` and `contradicted` lines with script-verified evidence are auto-fixed; the rest
-  become todos and are not deleted. The report is `state/diff-YYYY-MM-DD.json`; `log.md` gets one summary line.
+  become todos and are not deleted. The report is `state/diff-YYYY-MM-DD.json`; `log.md` gets one summary line
+  plus the human-readable todo lines.
   The review engine then fills gaps and dedupes without touching the todo lines.
 - **Week (`--lint`).** The lint engine checks the whole wiki: navigation, duplicates, contradictions, stale
   facts, scope, format and budgets. It also reads your resident rule files (`rule_files`) and suggests rules
@@ -69,10 +71,13 @@ use four fixed sections: `Current state`, `Key facts`, `Decisions & pitfalls` an
 - **Dream / Proposal Engine (every night).** A model reads only what you said since the last dream, each line
   together with the assistant reply before it. It outputs structured candidates: a stable dedup key, the rule
   draft, the target (a resident rule file + section, or a hook/test), and every occurrence with date + sid8 +
-  verbatim quote. The script normalizes and merges synonymous keys; only a candidate with at least 2
-  occurrences is shown as an open item in `misc/rule-candidates.md`, and a candidate you rejected is never
-  proposed again. `ingest.py proposals list` shows the records; `accept <id>` writes a patch under
-  `state/proposals/` without editing the rule file; `reject <id> [reason]` records the decision. The page is
+  verbatim quote. The script normalizes keys and merges records that share a normalized key, an identical draft,
+  or a near-identical normalized draft (numeric variants stay separate); the dream prompt asks the model to use
+  one canonical key for synonymous candidates (the script does not infer semantics from different wording). Only
+  a candidate with at least 2 occurrences is shown as an open item in `misc/rule-candidates.md`, and a candidate
+  you rejected is never proposed again. `ingest.py proposals list` shows the records; `accept <id>` refuses a
+  candidate below that threshold, writes a relative patch under `state/proposals/` without editing the rule
+  file, and prints the directory to apply it from; `reject <id> [reason]` records the decision. The page is
   generated from `misc/rule-candidates.json` (tracked), so the human page and machine state stay in sync.
 - **Acceptance (every pass).** The script does not trust what the model reports. It checks that `bin/lint.py`
   passes, that each session has a new `log.md` entry, that only wiki pages changed (not `CLAUDE.md`, `bin/`,
@@ -213,8 +218,9 @@ ingest.py --nightly        night run: leftovers, split, dream, review
 ingest.py --lint           weekly lint, then dream
 ingest.py --status         list sessions with new content
 ingest.py --usage [DAYS]   token use per day and model
-ingest.py proposals list   structured rule candidates (open / accepted / rejected)
-ingest.py proposals accept ID            write a patch under state/proposals/, never edit the rule file
+ingest.py proposals list [--json]   structured rule candidates (open / accepted / rejected)
+ingest.py proposals accept ID            write a patch under state/proposals/, never edit the rule file;
+                                         prints the directory to apply it from (≥2 occurrences required)
 ingest.py proposals reject ID [reason]   record a rejection; the candidate is never proposed again
 lint.py [--stats|--warn] [--language en|zh]   structural check / sizes / near-budget warnings
 ```

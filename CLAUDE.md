@@ -112,11 +112,14 @@ Claude Code's memory system adds `node_type`/`originSessionId`/`modified` under
   - Week, Sunday 03:00 `--lint`: the lint engine lints the whole wiki.
   - Dream, every night after the nightly or the weekly lint: a model reads what the user said since the last dream
     and produces structured **Proposal Engine** candidates (dedup key, rule draft, target rule file/section or
-    hook/test, occurrences with date + sid8 + quote). The script merges synonyms, shows a candidate only after
-    ≥ 2 occurrences in `misc/rule-candidates.md`, never re-proposes a rejected one, and never edits
-    `CLAUDE.md` or other resident rule files. Records live in `misc/rule-candidates.json` (tracked);
-    `bin/ingest.py proposals list|accept <id>|reject <id> [reason]` drives the user decision; `accept` only
-    writes a patch under `state/proposals/`.
+    hook/test, occurrences with date + sid8 + quote). The script normalizes keys and merges records with the
+    same key, an identical draft, or a near-identical normalized draft (numeric variants stay separate); the
+    prompt asks the model for one canonical key per synonymous topic (the script cannot infer semantics from
+    different wording alone). It shows a candidate only after ≥ 2 occurrences in `misc/rule-candidates.md`,
+    never re-proposes a rejected one, and never edits `CLAUDE.md` or other resident rule files. Records live in
+    `misc/rule-candidates.json` (tracked); `bin/ingest.py proposals list|accept <id>|reject <id> [reason]` drives
+    the user decision; `accept` requires ≥ 2 occurrences and only writes a relative patch under
+    `state/proposals/` (the CLI prints its base directory).
   Every engine gets the same SOP prompts, in the configured `language` (`SOP_*`: requirements / rules / SOP / acceptance criteria); the script
   checks acceptance itself (lint ok, a new `ingest|review | <sid8>` log entry per session, only wiki pages
   touched, log.md append-only, no mass deletion). Models edit a git worktree `.ingest-work`, never this working

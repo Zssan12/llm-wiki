@@ -55,16 +55,18 @@ Claude 只读到问题需要的深度：`MEMORY.md` → `infra/README.md` → `i
   模型失败时由兜底引擎重做这一批。Claude 额度拒绝时，这一批留到晚上。
 - **夜间（`--nightly`）。** 夜间引擎写入白天剩下的。然后 **Diff Engine** 读白天写入过的每段会话记录，连同白天那一轮
   写出的 git diff，按一个新增事实行一条来核对。先跑确定性检查：每个 `「引文」`、每条「用户说/用户定」都必须对上
-  所引会话的 USER 行，并列出跨页面的冲突；再由模型给每行一个结论：`supported` / `contradicted` / `stale` /
-  `misattributed` / `unsupported`，附 sid8 + 原话证据。只有 `misattributed` 和证据经脚本核实过的 `contradicted`
-  会自动修；其余写成待办，不擅自删改。报告在 `state/diff-YYYY-MM-DD.json`，`log.md` 记一行汇总。之后 review
-  引擎只补漏、去重，不碰待办行。
+  所引会话的 USER 行，并列出跨页面的冲突（只是提示，不是结论；不同页面上的相似模板可能误报）；再由模型给每行一个结论：
+  `supported` / `contradicted` / `stale` / `misattributed` / `unsupported`，附 sid8 + 原话证据。只有
+  `misattributed` 和证据经脚本核实过的 `contradicted` 会自动修；其余写成待办，不擅自删改。报告在
+  `state/diff-YYYY-MM-DD.json`，`log.md` 记一行汇总和可读的待办行。之后 review 引擎只补漏、去重，不碰待办行。
 - **每周（`--lint`）。** lint 引擎检查整个 wiki：导航、重复、矛盾、过时、范围、格式、预算。它也读你的常驻规则文件
   （`rule_files`），建议哪些规则该移出、删除或合并。它从不改这些文件。
 - **Dream / Proposal Engine（每晚）。** 模型只读上次 dream 以来你说的话，每句连同它前面那条助手回复。它输出结构化
   候选：稳定的去重键、规则草稿、目标（哪个规则文件的哪一节，或 hook/测试），以及每次出现（日期、sid8、逐字原话）。
-  脚本规范化并合并同义键；出现不少于 2 次的才作为待办出现在 `misc/rule-candidates.md`，你否决过的候选永远不再提。
-  `ingest.py proposals list` 查看记录；`accept <id>` 只在 `state/proposals/` 生成补丁，不改规则文件；
+  脚本规范化 key，并合并 key 相同、草稿逐字相同或近似相同的记录（只有数字不同的规则变体不合并）；dream 提示要求
+  模型给同义候选同一个 canonical key（脚本不会只靠措辞猜语义）。出现不少于 2 次的才作为待办出现在
+  `misc/rule-candidates.md`，你否决过的候选永远不再提。`ingest.py proposals list` 查看记录；`accept <id>`
+  拒绝不足 2 次的候选，只在 `state/proposals/` 生成相对路径补丁、不改规则文件，并打印应从哪里应用补丁；
   `reject <id> [原因]` 记录否决。页面由 `misc/rule-candidates.json`（纳入 git）生成，人看的页面和机器状态保持一致。
 - **验收（每一轮）。** 脚本不信模型的自述。它检查：`bin/lint.py` 通过；每个会话在 `log.md` 有一条新条目；
   只改了 wiki 页面（没改 `CLAUDE.md`、`bin/`、`schema/` 或隐藏文件）；`log.md` 只追加；没有大量删除。
@@ -197,8 +199,9 @@ ingest.py --nightly        夜间运行：补写、拆分、dream、复核
 ingest.py --lint           每周整理，然后 dream
 ingest.py --status         列出有新内容的会话
 ingest.py --usage [DAYS]   按天、按模型统计 token 用量
-ingest.py proposals list   结构化规则候选（open / accepted / rejected）
-ingest.py proposals accept ID           在 state/proposals/ 生成补丁，不改规则文件
+ingest.py proposals list [--json]  结构化规则候选（open / accepted / rejected）
+ingest.py proposals accept ID           在 state/proposals/ 生成补丁，不改规则文件；
+                                        打印应用目录；少于 2 次的候选会被拒绝
 ingest.py proposals reject ID [原因]    记录否决，以后不再提
 lint.py [--stats|--warn] [--language en|zh]   结构检查 / 各层大小 / 接近预算的警告
 ```
