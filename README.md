@@ -73,7 +73,7 @@ use four fixed sections: `Current state`, `Key facts`, `Decisions & pitfalls` an
   occurrences is shown as an open item in `misc/rule-candidates.md`, and a candidate you rejected is never
   proposed again. `ingest.py proposals list` shows the records; `accept <id>` writes a patch under
   `state/proposals/` without editing the rule file; `reject <id> [reason]` records the decision. The page is
-  generated from `state/proposals.json`, so the human page and machine state stay in sync.
+  generated from `misc/rule-candidates.json` (tracked), so the human page and machine state stay in sync.
 - **Acceptance (every pass).** The script does not trust what the model reports. It checks that `bin/lint.py`
   passes, that each session has a new `log.md` entry, that only wiki pages changed (not `CLAUDE.md`, `bin/`,
   `schema/` or hidden files), that `log.md` is append-only, and that there is no mass deletion.
@@ -220,8 +220,8 @@ lint.py [--stats|--warn] [--language en|zh]   structural check / sizes / near-bu
 ```
 
 Runtime files (all git-ignored) sit in the wiki root: `.ingest.log`, `.ingest.sqlite`, `.ingest-usage.tsv`,
-`.ingest.lock`, `.ingest.queue`, `state/` (Diff Engine reports, `proposals.json`, `proposals/*.patch`) and the
-`.ingest-work/` worktree.
+`.ingest.lock`, `.ingest.queue`, `state/` (Diff Engine reports, `proposals/*.patch`) and the
+`.ingest-work/` worktree. The structured proposal records in `misc/rule-candidates.json` are tracked, like the page.
 
 ## Finding the original conversation
 

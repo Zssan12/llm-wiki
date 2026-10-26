@@ -114,8 +114,9 @@ Claude Code's memory system adds `node_type`/`originSessionId`/`modified` under
     and produces structured **Proposal Engine** candidates (dedup key, rule draft, target rule file/section or
     hook/test, occurrences with date + sid8 + quote). The script merges synonyms, shows a candidate only after
     ≥ 2 occurrences in `misc/rule-candidates.md`, never re-proposes a rejected one, and never edits
-    `CLAUDE.md` or other resident rule files. `bin/ingest.py proposals list|accept <id>|reject <id> [reason]`
-    drives the user decision; `accept` only writes a patch under `state/proposals/`.
+    `CLAUDE.md` or other resident rule files. Records live in `misc/rule-candidates.json` (tracked);
+    `bin/ingest.py proposals list|accept <id>|reject <id> [reason]` drives the user decision; `accept` only
+    writes a patch under `state/proposals/`.
   Every engine gets the same SOP prompts, in the configured `language` (`SOP_*`: requirements / rules / SOP / acceptance criteria); the script
   checks acceptance itself (lint ok, a new `ingest|review | <sid8>` log entry per session, only wiki pages
   touched, log.md append-only, no mass deletion). Models edit a git worktree `.ingest-work`, never this working

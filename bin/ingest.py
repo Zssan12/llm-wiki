@@ -126,7 +126,8 @@ LANGUAGE = CFG["language"]
 DIFF_ENGINE = bool(CFG["diff_engine"])
 PROPOSAL_ENGINE = bool(CFG["proposal_engine"])
 STATE_DIR = REPO / "state"
-PROPOSALS = STATE_DIR / "proposals.json"
+PROPOSALS_REL = "misc/rule-candidates.json"
+PROPOSALS = REPO / PROPOSALS_REL
 PROPOSAL_PATCHES = STATE_DIR / "proposals"
 # repository files that are not wiki pages: a model pass touching them is rejected
 NOT_PAGES = ("bin/", "launchd/", "schema/", "tests/", ".")
@@ -877,15 +878,17 @@ def lint_errors():
     return "" if r.returncode == 0 else r.stdout.strip()
 
 
-def acceptance(sids=(), max_delete=None, kind="ingest"):
+def acceptance(sids=(), max_delete=None, kind="ingest", extra_ok=()):
     """Checks run() does itself, whatever the model claims: lint (A1), a log.md entry per session (A2),
     only wiki pages touched (R9), no mass deletion. Models never commit, so their work is exactly the
-    uncommitted diff against HEAD (a commit landing mid-pass from another session isn't counted)."""
+    uncommitted diff against HEAD (a commit landing mid-pass from another session isn't counted).
+    ``extra_ok`` names script-only bookkeeping files (the generated proposal store), never model edits."""
     base = "HEAD"
     errs = [lint_errors()]
     git("add", "-AN")  # intent-to-add so new files show in the diff
     files = git("diff", "--name-only", base).split()
-    bad = [f for f in files if f.startswith(NOT_PAGES) or f in TOP_NOT_PAGES or not f.endswith(".md")]
+    bad = [f for f in files if f.startswith(NOT_PAGES) or f in TOP_NOT_PAGES
+           or (not f.endswith(".md") and f not in extra_ok)]
     if bad:
         errs.append(f"R9: touched files outside the wiki pages: {', '.join(bad)} — revert those edits")
     log_diff = git("diff", base, "--", "log.md").splitlines()
@@ -996,11 +999,11 @@ def model_pass(label, instruction, stdin="", context=None, engine=None, sids=(),
     return "changed" if deliver(label) else False
 
 
-def commit_script(label, sids=(), kind=None, max_delete=None):
+def commit_script(label, sids=(), kind=None, max_delete=None, extra_ok=()):
     """Commit edits the script itself made in WORK (generated page, log summary), with acceptance."""
     global WIKI
     WIKI = WORK
-    errs = acceptance(sids, max_delete, kind) if kind else lint_errors()
+    errs = acceptance(sids, max_delete, kind, extra_ok) if kind else lint_errors()
     if errs:
         discard()
         log(f"{label} REVERTED: {errs[:500]}")
@@ -1592,17 +1595,20 @@ def dream_structured_batch(batch, items, label, text):
     if not valid:
         return not any("quotes not found among the USER lines" in p for p in problems)
     sync_work()
-    store = proposal_engine.ProposalStore(PROPOSALS)
+    store_path = WORK / PROPOSALS_REL
+    old_store = store_path.read_text() if store_path.exists() else ""
+    store = proposal_engine.ProposalStore(store_path)
     for cand in valid:
         store.add(cand["draft"], cand.get("target"), cand["occurrences"], key=cand.get("key"), save=False)
     store.save()
-    page, changed = proposal_engine.publish(store, WORK, LANGUAGE)
-    if not changed:
+    new_store = store_path.read_text()
+    _page, page_changed = proposal_engine.publish(store, WORK, LANGUAGE)
+    if not page_changed and new_store == old_store:
         return True
     today = time.strftime("%Y-%m-%d")
     with open(WORK / "log.md", "a") as f:
         f.write(f"\n## [{today}] dream\n- {proposal_engine.PAGE}: {len(valid)} candidate(s) merged\n")
-    return bool(commit_script(label, kind="dream"))
+    return bool(commit_script(label, kind="dream", extra_ok=(PROPOSALS_REL,)))
 
 
 def dream(db, deadline):
@@ -1692,7 +1698,8 @@ def proposals_cmd(argv):
             print(f"error: {e}", file=sys.stderr)
             return 1
         page, _ = proposal_engine.publish(store, REPO, LANGUAGE)
-        commit_repo_paths(f"proposals accept {record['id']}", [str(page.relative_to(REPO)), "misc/README.md"])
+        commit_repo_paths(f"proposals accept {record['id']}",
+                          [str(page.relative_to(REPO)), "misc/README.md", PROPOSALS_REL])
         print(f"accepted {record['id']} ({record['status']})")
         print(f"patch: {patch}")
         print("resident rule file not modified; review the patch before applying it")
@@ -1707,7 +1714,8 @@ def proposals_cmd(argv):
             print(f"error: no such proposal {e}", file=sys.stderr)
             return 1
         page, _ = proposal_engine.publish(store, REPO, LANGUAGE)
-        commit_repo_paths(f"proposals reject {record['id']}", [str(page.relative_to(REPO)), "misc/README.md"])
+        commit_repo_paths(f"proposals reject {record['id']}",
+                          [str(page.relative_to(REPO)), "misc/README.md", PROPOSALS_REL])
         print(f"rejected {record['id']}" + (f": {record['reason']}" if record["reason"] else ""))
         return 0
     print("usage: ingest.py proposals list | accept <id> | reject <id> [reason]", file=sys.stderr)

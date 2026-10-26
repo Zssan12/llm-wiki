@@ -94,7 +94,7 @@ def _unique_occurrences(items):
 
 class ProposalStore:
     """JSON-backed candidate store.  One store per wiki, normally
-    ``<wiki>/state/proposals.json`` (git-ignored runtime state)."""
+    ``<wiki>/misc/rule-candidates.json`` (tracked with the page)."""
 
     def __init__(self, path):
         self.path = Path(path)

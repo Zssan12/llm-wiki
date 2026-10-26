@@ -105,7 +105,7 @@ class IngestZhTest(unittest.TestCase):
     def test_proposals_cli_accept_and_reject(self):
         self.w.ingest("--session", self.sid)
         self.w.ingest("--nightly")
-        records = json.loads((self.w.wiki / "state" / "proposals.json").read_text())["proposals"]
+        records = json.loads((self.w.wiki / "misc" / "rule-candidates.json").read_text())["proposals"]
         self.assertTrue(records)
         listed = self.w.ingest("proposals", "list")
         self.assertEqual(listed.returncode, 0, listed.stderr)
@@ -116,7 +116,7 @@ class IngestZhTest(unittest.TestCase):
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
         self.assertIn("resident rule file not modified", accepted.stdout)
         self.assertFalse(target.exists())  # accept only writes a patch
-        self.assertEqual(json.loads((self.w.wiki / "state" / "proposals.json").read_text())["proposals"][0]["status"],
+        self.assertEqual(json.loads((self.w.wiki / "misc" / "rule-candidates.json").read_text())["proposals"][0]["status"],
                          "accepted")
         second = records[1]["id"]
         rejected = self.w.ingest("proposals", "reject", second, "不适用")
@@ -134,7 +134,7 @@ class IngestZhTest(unittest.TestCase):
         self.assertIn(f"review {sid[:8]}", w.commits())
         self.assertIn("dream 1 sessions", w.commits())
         self.assertFalse((w.wiki / "state" / f"diff-{time.strftime('%Y-%m-%d')}.json").exists())
-        self.assertFalse((w.wiki / "state" / "proposals.json").exists())
+        self.assertFalse((w.wiki / "misc" / "rule-candidates.json").exists())
 
     def test_dream_misquote_is_rejected(self):
         self.w.ingest("--session", self.sid)

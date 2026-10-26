@@ -94,8 +94,8 @@ Claude Code 的记忆系统写入时会在 `metadata` 下加 `node_type`/`origin
   - Dream：每晚在 nightly 或周 lint 之后，读上次 dream 以来用户说的话，输出结构化的 **Proposal Engine** 候选
     （去重键、规则草稿、目标规则文件/节或 hook/测试、每次出现的日期 + sid8 + 原话）。脚本合并同义候选，
     出现 ≥ 2 次的才写进 `misc/rule-candidates.md` 待办，否决过的永远不再提；从不改 `CLAUDE.md` 等常驻规则文件。
-    `bin/ingest.py proposals list|accept <id>|reject <id> [原因]` 驱动用户决定；`accept` 只在
-    `state/proposals/` 生成补丁。
+    结构化记录在 `misc/rule-candidates.json`（纳入 git）；`bin/ingest.py proposals list|accept <id>|reject <id> [原因]`
+    驱动用户决定，`accept` 只在 `state/proposals/` 生成补丁。
   所有引擎用同一套 SOP 提示（语言随 `language` 配置）（`SOP_*`：要求 / 规则 / SOP / 验收标准）；脚本自己验收（lint ok、每个会话一条新的
   `ingest|review | <sid8>` 日志、只动 wiki 页面、log.md 只追加、没有大量删除）。模型在 git worktree `.ingest-work`
   里改，从不碰本工作区；验收通过的提交 cherry-pick 到这里，配置了 `remote` 时再 push。

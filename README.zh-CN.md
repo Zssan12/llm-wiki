@@ -65,7 +65,7 @@ Claude 只读到问题需要的深度：`MEMORY.md` → `infra/README.md` → `i
   候选：稳定的去重键、规则草稿、目标（哪个规则文件的哪一节，或 hook/测试），以及每次出现（日期、sid8、逐字原话）。
   脚本规范化并合并同义键；出现不少于 2 次的才作为待办出现在 `misc/rule-candidates.md`，你否决过的候选永远不再提。
   `ingest.py proposals list` 查看记录；`accept <id>` 只在 `state/proposals/` 生成补丁，不改规则文件；
-  `reject <id> [原因]` 记录否决。页面由 `state/proposals.json` 生成，人看的页面和机器状态保持一致。
+  `reject <id> [原因]` 记录否决。页面由 `misc/rule-candidates.json`（纳入 git）生成，人看的页面和机器状态保持一致。
 - **验收（每一轮）。** 脚本不信模型的自述。它检查：`bin/lint.py` 通过；每个会话在 `log.md` 有一条新条目；
   只改了 wiki 页面（没改 `CLAUDE.md`、`bin/`、`schema/` 或隐藏文件）；`log.md` 只追加；没有大量删除。
 - **隔离。** 模型在单独的 git worktree（`.ingest-work`）里改，从不碰你的工作区。只有验收通过的提交才 cherry-pick
@@ -204,7 +204,8 @@ lint.py [--stats|--warn] [--language en|zh]   结构检查 / 各层大小 / 接�
 ```
 
 运行时文件都在 wiki 根目录，都已被 git 忽略：`.ingest.log`、`.ingest.sqlite`、`.ingest-usage.tsv`、`.ingest.lock`、
-`.ingest.queue`、`state/`（Diff Engine 报告、`proposals.json`、`proposals/*.patch`）和 `.ingest-work/` worktree。
+`.ingest.queue`、`state/`（Diff Engine 报告、`proposals/*.patch`）和 `.ingest-work/` worktree。结构化的候选记录
+`misc/rule-candidates.json` 和页面一样纳入 git。
 
 ## 找回原始对话
 
