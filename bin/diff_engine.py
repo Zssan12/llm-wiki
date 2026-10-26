@@ -34,11 +34,26 @@ COMMIT_RE = re.compile(r"^=== ([0-9a-f]+) (.*)$")
 # source: SPEC (Issue #1 asks for conflict listing); 0.75 catches near-identical
 # fact lines whose numbers disagree while ignoring unrelated pages.
 CONFLICT_RATIO = 0.75
+# source: PR review P2; a single character or other very short common substring
+# cannot verify that the user actually said a fact. Four CJK characters is the
+# shortest fragment that carries a word rather than a stray character.
+MIN_QUOTE_CHARS = 4
 
 
 def flatten(text):
     """Whitespace-insensitive form used for quote checks (same rule as dream)."""
     return re.sub(r"\s+", "", text or "")
+
+
+def quote_fragments(quote):
+    """Split a quote at ``…`` / ``...`` and flatten each non-empty fragment."""
+    return [flatten(f) for f in re.split(r"…+|\.\.\.", quote or "") if flatten(f)]
+
+
+def quote_matches(quote, text):
+    """True when every quote fragment is long enough and occurs in ``text``."""
+    frags = quote_fragments(quote)
+    return bool(frags) and all(len(f) >= MIN_QUOTE_CHARS and f in flatten(text) for f in frags)
 
 
 def _is_fact_line(text):
@@ -103,14 +118,20 @@ def quote_checks(line, change, session_texts):
     """Check every 「quote」 on a line against the cited sessions' USER lines."""
     checks = []
     for quote in QUOTE_RE.findall(line):
-        frags = [flatten(f) for f in re.split(r"…+|\.\.\.", quote) if flatten(f)]
+        frags = quote_fragments(quote)
         sids = _texts_for(line, change, session_texts)
-        missing = [f for f in frags if not any(f in flatten(session_texts.get(s, "")) for s in sids)]
-        checks.append({"check": "quote", "quote": quote, "ok": not missing,
+        flat = {s: flatten(session_texts.get(s, "")) for s in sids}
+        problems = []
+        for f in frags:
+            if len(f) < MIN_QUOTE_CHARS:
+                problems.append(f"quote fragment too short to verify: {f}")
+            elif not any(f in text for text in flat.values()):
+                problems.append(f)
+        checks.append({"check": "quote", "quote": quote, "ok": not problems,
                        "sids": sids,
-                       "detail": "" if not missing else
+                       "detail": "" if not problems else
                        "quote not found among the USER lines of the cited session(s): "
-                       + ", ".join(missing)})
+                       + ", ".join(problems)})
     return checks
 
 
@@ -224,9 +245,7 @@ def find_conflicts(changes, pages):
 
 
 def _verified(quote, sid, session_texts):
-    text = flatten(session_texts.get(sid or "", ""))
-    frags = [flatten(f) for f in re.split(r"…+|\.\.\.", quote or "") if flatten(f)]
-    return bool(frags) and all(f in text for f in frags)
+    return quote_matches(quote, session_texts.get(sid or "", ""))
 
 
 def apply_verdicts(changes, data, session_texts):

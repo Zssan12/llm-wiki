@@ -77,6 +77,14 @@ class DeterministicTest(unittest.TestCase):
         c = de.check_changes([change("- 用户说「demo 用 … SQLite」")], self.TEXTS)[0]
         self.assertTrue(c["deterministic_ok"])
 
+    def test_single_character_quote_is_too_short_to_verify(self):
+        # "用" is in the transcript, but one common character proves nothing.
+        c = de.check_changes([change("- 用户说「用」")], self.TEXTS)[0]
+        self.assertFalse(c["deterministic_ok"])
+        self.assertTrue(any("too short" in x["detail"] for x in c["checks"]))
+        self.assertFalse(de.quote_matches("用", self.TEXTS["12345678"]))
+        self.assertTrue(de.quote_matches("demo 用 SQLite", self.TEXTS["12345678"]))
+
     def test_explicit_missing_sid_does_not_fall_back_to_another_session(self):
         c = de.check_changes([change("- 用户说 1234abcd「demo 用 SQLite」")], self.TEXTS)[0]
         self.assertFalse(c["deterministic_ok"])
@@ -131,6 +139,13 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual((out[0]["verdict"], out[0]["action"]), (de.UNJUDGED, "todo"))
         out = de.apply_verdicts(self.changes[:1], {"verdicts": []}, self.TEXTS)
         self.assertEqual(out[0]["verdict"], de.UNJUDGED)
+
+    def test_single_character_evidence_does_not_verify(self):
+        out = de.apply_verdicts([change("- 用户说「用」")], {"verdicts": [
+            {"index": 1, "verdict": "contradicted", "evidence": [{"sid8": "12345678", "quote": "用"}]},
+        ]}, self.TEXTS)
+        self.assertFalse(out[0]["evidence"][0]["verified"])
+        self.assertEqual(out[0]["action"], "todo")
 
     def test_report_summary_and_log_line(self):
         out = de.apply_verdicts(self.changes, {"verdicts": [
