@@ -33,6 +33,15 @@ DRAFT_CLIP = 120
 SYNONYM_DICE = 0.75
 # source: shorter drafts have too few character bigrams for a stable comparison.
 MIN_SYNONYM_CHARS = 6
+# source: PR review P2 (opposite rules such as 要/不要 and Always/Never merged).
+# If either draft carries a negation, only an exact canonical key may merge it;
+# the approximate fallback must stay conservative because it cannot understand
+# which side of the rule a negation changes.
+NEGATION_ZH = ("不要", "不能", "不得", "不用", "不必", "不需", "不准", "不许", "不可",
+               "不该", "不应", "无需", "禁止", "切勿", "别", "勿", "未", "没", "不")
+NEGATION_EN = re.compile(
+    r"\b(?:not|never|no|none|without|cannot|can't|don't|doesn't|didn't|shouldn't|"
+    r"mustn't|won't|wouldn't|isn't|aren't|avoid)\b", re.IGNORECASE)
 PAGE = "misc/rule-candidates.md"
 SCOPE = "rule candidates from dream, the user's accept/reject decisions, and proposal patches"
 
@@ -47,15 +56,29 @@ def _bigrams(text):
     return [text[i:i + 2] for i in range(len(text) - 1)] or ([text] if text else [])
 
 
+def has_negation(text):
+    """True when a draft carries a negation (Chinese or English).
+
+    The approximate fallback cannot tell which side a negation flips, so the
+    caller must not merge such drafts unless their canonical keys are equal."""
+    raw = str(text or "").lower()
+    return any(word in raw for word in NEGATION_ZH) or bool(NEGATION_EN.search(raw))
+
+
 def similar_draft(a, b):
     """Conservative fallback for paraphrases the model gave different keys.
 
     Character-bigram Dice similarity above ``SYNONYM_DICE``.  Drafts that
     differ only in a number ("备份保留 7 天" / "备份保留 30 天") are rule
-    variants, not synonyms, so they never merge."""
+    variants, not synonyms, so they never merge.  Negated drafts (要/不要,
+    Always/Never) never merge by similarity: opposite rules look deceptively
+    alike and the fallback cannot infer the intended polarity."""
+    raw_a, raw_b = str(a or ""), str(b or "")
     a, b = normalize_key(a), normalize_key(b)
     if not a or not b or a == b:
         return a == b
+    if has_negation(raw_a) or has_negation(raw_b):
+        return False
     if len(a) < MIN_SYNONYM_CHARS or len(b) < MIN_SYNONYM_CHARS:
         return False
     if re.search(r"\d", a + b) and re.sub(r"\d+", "", a) == re.sub(r"\d+", "", b):
@@ -309,18 +332,32 @@ def rule_patch(target, draft):
     return "".join(diff)
 
 
+def registered_text(text, language="zh"):
+    """Return README text with the generated-page link, without touching disk.
+
+    ``text=None`` means the file does not exist; the caller keeps its existing
+    ``# misc`` default.  Keeping this pure lets the commit path compute the
+    generated line from HEAD instead of from a user's dirty working tree."""
+    if text is None:
+        text = "# misc\n"
+    if "(rule-candidates.md)" in text:
+        return text
+    desc = "规则候选（由结构化记录生成）" if language == "zh" else "rule candidates (generated from structured records)"
+    if not text.endswith("\n"):
+        text += "\n"
+    return text + f"- [rule-candidates](rule-candidates.md) — {desc}\n"
+
+
 def ensure_registered(wiki, language="zh"):
     """Put the generated page into misc/README.md once."""
     wiki = Path(wiki)
     readme = wiki / "misc" / "README.md"
-    text = readme.read_text() if readme.exists() else "# misc\n"
-    if "(rule-candidates.md)" in text:
+    before = readme.read_text() if readme.exists() else None
+    after = registered_text(before, language)
+    if after == (before if before is not None else "# misc\n"):
         return False
-    desc = "规则候选（由结构化记录生成）" if language == "zh" else "rule candidates (generated from structured records)"
-    if not text.endswith("\n"):
-        text += "\n"
     readme.parent.mkdir(parents=True, exist_ok=True)
-    readme.write_text(text + f"- [rule-candidates](rule-candidates.md) — {desc}\n")
+    readme.write_text(after)
     return True
 
 
@@ -383,8 +420,11 @@ def render_page(records, language="zh"):
     return "\n".join(out) + "\n"
 
 
-def publish(store, wiki, language="zh"):
-    """Write the generated page and register it; returns (page_path, changed)."""
+def publish(store, wiki, language="zh", meta=False):
+    """Write the generated page and register it.
+
+    Returns ``(page_path, changed)``; with ``meta=True`` also returns whether
+    the README changed, so the CLI can commit only files it actually wrote."""
     wiki = Path(wiki)
     page = wiki / PAGE
     page.parent.mkdir(parents=True, exist_ok=True)
@@ -392,7 +432,9 @@ def publish(store, wiki, language="zh"):
     changed = not page.exists() or page.read_text() != text
     if changed:
         page.write_text(text)
-    ensure_registered(wiki, language)
+    readme_changed = ensure_registered(wiki, language)
+    if meta:
+        return page, changed, readme_changed
     return page, changed
 
 

@@ -139,6 +139,20 @@ class StoreTest(unittest.TestCase):
         self.assertIsNot(r1, r2)
         self.assertEqual(len(self.store.records), 2)
 
+    def test_negated_rule_variants_do_not_merge(self):
+        r1 = self.store.add("回答先给结论，再解释原因", None,
+                            [occ("10-25", "12345678", "回答先给结论，再解释原因")], key="answer-then-explain")
+        r2 = self.store.add("回答先给结论，不要解释原因", None,
+                            [occ("10-26", "87654321", "回答先给结论，不要解释原因")], key="answer-no-explain")
+        self.assertIsNot(r1, r2)
+        self.assertEqual(len(self.store.records), 2)
+        r3 = self.store.add("Always run the linter before committing", None,
+                            [occ("10-27", "abcdef12", "Always run the linter before committing")], key="always-lint")
+        r4 = self.store.add("Never run the linter before committing", None,
+                            [occ("10-28", "1234abcd", "Never run the linter before committing")], key="never-lint")
+        self.assertIsNot(r3, r4)
+        self.assertEqual(len(self.store.records), 4)
+
     def test_render_page_skips_zero_occurrence_record(self):
         self.store.add("空候选", None, [])
         page = pe.render_page(self.store.records, "zh")

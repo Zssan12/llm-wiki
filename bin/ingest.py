@@ -1254,7 +1254,10 @@ def keep_current_changes(changes, root=None):
     That intermediate line is not a fact the review can protect; keeping it made
     ``diff_scope_check`` reject every nightly run forever (PR review P1). Match
     whole lines, not substrings, and assign the line number in the current page.
-    """
+
+    The caller must pass the same revision ``diff_scope_check`` will inspect:
+    ``day_changes`` passes ``WORK`` (HEAD after sync), not REPO's possibly dirty
+    working tree (PR review P2)."""
     root = Path(root) if root is not None else REPO
     cache, kept = {}, []
     for change in changes:
@@ -1288,7 +1291,9 @@ def day_changes(sids, since):
     if not commits:
         return []
     out = git("show", "--unified=0", "--format=tformat:=== %h %s", *commits, "--", "*.md", ":!log.md", cwd=REPO)
-    return keep_current_changes(diff_engine.parse_git_show(out))
+    # Scope checks inspect WORK (HEAD after sync); filtering against REPO's dirty
+    # working tree would make a user's uncommitted old line a permanent REVERT.
+    return keep_current_changes(diff_engine.parse_git_show(out), root=WORK)
 
 
 def user_text_of(item):
@@ -1745,25 +1750,143 @@ def dream(db, deadline):
             db.commit()
 
 
-def commit_repo_paths(label, paths):
-    """Commit a CLI-generated page update in REPO, without touching unrelated files.
+def _git_run(args, env=None, input=None):
+    """Run a git command in REPO and return stdout, raising on failure.
 
-    ``git commit --only -- <paths>`` commits exactly those paths and leaves
-    everything else staged; a plain ``git commit`` would swallow the user's
-    unrelated staged work (PR review P1)."""
-    paths = [str(p) for p in paths]
-    if not paths or not git("status", "--porcelain", "--", *paths, cwd=REPO):
-        return False
-    r = subprocess.run(["git", "add", "--", *paths], cwd=REPO, capture_output=True, text=True)
+    Unlike ``git()`` this keeps stderr and checks the exit code: the generated
+    commit path must not silently leave a partially updated repository."""
+    r = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True,
+                       input=input, env=env)
     if r.returncode:
-        log(f"{label} add failed: {(r.stderr or r.stdout).strip()[-300:]}")
+        raise RuntimeError((r.stderr or r.stdout).strip()[-500:] or f"git {' '.join(args)} failed")
+    return r.stdout
+
+
+def _git_text(path, rev="HEAD"):
+    """File text at a revision, or None when the path does not exist there."""
+    try:
+        return _git_run(["show", f"{rev}:{path}"])
+    except RuntimeError:
+        return None
+
+
+def _index_text(path):
+    try:
+        return _git_run(["show", f":{path}"])
+    except RuntimeError:
+        return None
+
+
+def _work_text(path):
+    p = REPO / path
+    return p.read_text() if p.exists() else None
+
+
+def _git_blob(text):
+    return _git_run(["hash-object", "-w", "--stdin"], input=text).strip()
+
+
+def _set_index_text(path, text):
+    blob = _git_blob(text)
+    _git_run(["update-index", "--add", "--cacheinfo", f"100644,{blob},{path}"])
+
+
+def require_clean_generated_paths(paths):
+    """Refuse to start when a file the CLI will generate has uncommitted work.
+
+    The CLI can safely preserve a dirty README (it only appends a generated
+    link), but a generated page or JSON store that has user edits must not be
+    silently overwritten.  The caller checks this before changing any state."""
+    for path in paths:
+        head, index, work = _git_text(path), _index_text(path), _work_text(path)
+        if head is None and index is None:
+            if work is not None:
+                raise RuntimeError(f"{path} is untracked; commit or remove it before accept/reject")
+            continue
+        if index != head or work != head:
+            raise RuntimeError(f"{path} has staged or uncommitted changes; "
+                               "commit or stash them before accept/reject")
+
+
+def commit_generated_paths(label, contents):
+    """Commit only the generated delta, leaving user work and the index alone.
+
+    ``contents`` maps repo-relative paths to either text (commit and index) or
+    ``{"commit": ..., "index": ...}``.  The commit tree is built with a
+    temporary index from HEAD, so a pre-existing unstaged/staged README change
+    in the working tree is never included (PR review P1).  Afterwards the real
+    index is updated only for the generated paths, preserving the user's staged
+    vs unstaged split for README edits."""
+    pending = {}
+    for path, value in contents.items():
+        if isinstance(value, dict):
+            commit_text = value.get("commit")
+            index_text = value.get("index", commit_text)
+        else:
+            commit_text = index_text = value
+        if commit_text is None:
+            continue
+        if _git_text(path) == commit_text:
+            continue  # this run generated no change for the file
+        pending[str(path)] = (commit_text, commit_text if index_text is None else index_text)
+    if not pending:
         return False
-    r = subprocess.run(["git", "commit", "--only", "-qm", label, "--", *paths],
-                       cwd=REPO, capture_output=True, text=True)
-    if r.returncode:
-        log(f"{label} commit failed: {(r.stderr or r.stdout).strip()[-300:]}")
-        return False
-    return True
+
+    head = _git_run(["rev-parse", "HEAD"]).strip()
+    fd, temp_index = tempfile.mkstemp(prefix=".git-index-", dir=str(REPO))
+    os.close(fd)
+    try:
+        env = {**os.environ, "GIT_INDEX_FILE": temp_index}
+        _git_run(["read-tree", head], env=env)
+        for path, (commit_text, _index_text_value) in pending.items():
+            blob = _git_blob(commit_text)
+            _git_run(["update-index", "--add", "--cacheinfo", f"100644,{blob},{path}"], env=env)
+        tree = _git_run(["write-tree"], env=env).strip()
+        if tree == _git_run(["rev-parse", f"{head}^{{tree}}"]).strip():
+            return False
+        name = _git_run(["config", "user.name"]).strip()
+        email = _git_run(["config", "user.email"]).strip()
+        if not name or not email:
+            raise RuntimeError("git user.name and user.email are required for DCO sign-off")
+        signoff = f"Signed-off-by: {name} <{email}>"
+        commit = _git_run(["commit-tree", tree, "-p", head, "-m", label, "-m", signoff]).strip()
+        _git_run(["update-ref", "-m", label, "HEAD", commit, head])
+        for path, (_commit_text, index_text) in pending.items():
+            _set_index_text(path, index_text)
+        return True
+    finally:
+        try:
+            os.unlink(temp_index)
+        except OSError:
+            pass
+
+
+def _proposal_output(label, before_json, page, page_changed, readme_changed):
+    """Commit only proposal files this command actually generated.
+
+    The README commit text is computed from HEAD, not from the worktree, so a
+    user's uncommitted README line stays in the working tree and out of the
+    generated commit.  The real index is updated with the generated line on top
+    of the user's index text, preserving a staged change."""
+    contents = {}
+    if page_changed:
+        contents[proposal_engine.PAGE] = page.read_text()
+    after_json = _work_text(PROPOSALS_REL)
+    if after_json is not None and after_json != before_json:
+        contents[PROPOSALS_REL] = after_json
+    if readme_changed:
+        readme_rel = "misc/README.md"
+        head_readme = _git_text(readme_rel)
+        head_base = head_readme if head_readme is not None else "# misc\n"
+        commit_readme = proposal_engine.registered_text(head_base, LANGUAGE)
+        if commit_readme != head_base:
+            index_readme = _index_text(readme_rel)
+            index_base = index_readme if index_readme is not None else "# misc\n"
+            contents[readme_rel] = {
+                "commit": commit_readme,
+                "index": proposal_engine.registered_text(index_base, LANGUAGE),
+            }
+    return commit_generated_paths(label, contents)
 
 
 def proposals_cmd(argv, as_json=False):
@@ -1784,13 +1907,23 @@ def proposals_cmd(argv, as_json=False):
             print("usage: ingest.py proposals accept <id>", file=sys.stderr)
             return 2
         try:
+            require_clean_generated_paths([proposal_engine.PAGE, PROPOSALS_REL])
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        before_json = _work_text(PROPOSALS_REL) or ""
+        try:
             record, patch = store.accept(argv[1], PROPOSAL_PATCHES)
         except (KeyError, ValueError, OSError) as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
-        page, _ = proposal_engine.publish(store, REPO, LANGUAGE)
-        commit_repo_paths(f"proposals accept {record['id']}",
-                          [str(page.relative_to(REPO)), "misc/README.md", PROPOSALS_REL])
+        page, page_changed, readme_changed = proposal_engine.publish(store, REPO, LANGUAGE, meta=True)
+        try:
+            _proposal_output(f"proposals accept {record['id']}", before_json,
+                             page, page_changed, readme_changed)
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
         print(f"accepted {record['id']} ({record['status']})")
         print(f"patch: {patch}")
         if proposal_engine.normalize_target(record["target"])["kind"] == "rule":
@@ -1802,13 +1935,23 @@ def proposals_cmd(argv, as_json=False):
             print("usage: ingest.py proposals reject <id> [reason]", file=sys.stderr)
             return 2
         try:
+            require_clean_generated_paths([proposal_engine.PAGE, PROPOSALS_REL])
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        before_json = _work_text(PROPOSALS_REL) or ""
+        try:
             record = store.reject(argv[1], " ".join(argv[2:]))
         except KeyError as e:
             print(f"error: no such proposal {e}", file=sys.stderr)
             return 1
-        page, _ = proposal_engine.publish(store, REPO, LANGUAGE)
-        commit_repo_paths(f"proposals reject {record['id']}",
-                          [str(page.relative_to(REPO)), "misc/README.md", PROPOSALS_REL])
+        page, page_changed, readme_changed = proposal_engine.publish(store, REPO, LANGUAGE, meta=True)
+        try:
+            _proposal_output(f"proposals reject {record['id']}", before_json,
+                             page, page_changed, readme_changed)
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
         print(f"rejected {record['id']}" + (f": {record['reason']}" if record["reason"] else ""))
         return 0
     print("usage: ingest.py proposals list | accept <id> | reject <id> [reason]", file=sys.stderr)

@@ -197,6 +197,23 @@ class RegressionTest(unittest.TestCase):
         self.assertIn("2223", page)
         self.assertNotIn("2222", page)
 
+    def test_nightly_survives_uncommitted_repo_edit(self):
+        s1 = self.w.session([("user", "The staging server SSH port is 2222.")])
+        self.assertEqual(self.w.ingest("--session", s1).returncode, 0)
+        s2 = self.w.session([("user", "Correction: the staging server SSH port is 2223.")])
+        self.assertEqual(self.w.ingest("--session", s2).returncode, 0)
+        page = self.w.wiki / "misc" / "demo-facts.md"
+        page.write_text(page.read_text().rstrip("\n") + "\n- The staging server SSH port is 2222.\n")
+        r = self.w.ingest("--nightly")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("REVERTED", self.w.log_text())
+        reviewed = self.db("reviewed")
+        self.assertIn(s1, reviewed)
+        self.assertIn(s2, reviewed)
+        text = page.read_text()
+        self.assertIn("2223", text)
+        self.assertIn("- The staging server SSH port is 2222.", text)
+
     def test_proposals_accept_does_not_commit_unrelated_staged_file(self):
         s1 = self.w.session([("user", "Always run the linter before committing.")])
         s2 = self.w.session([("user", "Always run the linter before committing.")])
@@ -212,6 +229,87 @@ class RegressionTest(unittest.TestCase):
         stat = git(self.w.wiki, "show", "--stat", "--oneline", "HEAD")
         self.assertNotIn("user-notes.md", stat)
         self.assertIn("A  misc/user-notes.md", git(self.w.wiki, "status", "--porcelain"))
+
+    def test_proposals_accept_does_not_commit_readme_user_change(self):
+        s1 = self.w.session([("user", "Always run the linter before committing.")])
+        s2 = self.w.session([("user", "Always run the linter before committing.")])
+        self.w.ingest("--session", s1)
+        self.w.ingest("--session", s2)
+        self.w.ingest("--nightly")
+        records = json.loads((self.w.wiki / "misc" / "rule-candidates.json").read_text())["proposals"]
+        record = next(r for r in records if len(r["occurrences"]) >= 2)
+        readme = self.w.wiki / "misc" / "README.md"
+        readme.write_text(readme.read_text() + "- user note in README\n")
+        git(self.w.wiki, "add", "misc/README.md")
+        r = self.w.ingest("proposals", "accept", record["id"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        stat = git(self.w.wiki, "show", "--stat", "--oneline", "HEAD")
+        self.assertNotIn("misc/README.md", stat)
+        self.assertIn("Signed-off-by: test <test@example.com>", git(self.w.wiki, "show", "-s", "--format=%B", "HEAD"))
+        self.assertIn("M  misc/README.md", git(self.w.wiki, "status", "--porcelain"))
+        self.assertIn("user note in README", readme.read_text())
+
+    def test_proposals_accept_generates_only_the_readme_line(self):
+        s1 = self.w.session([("user", "Always run the linter before committing.")])
+        s2 = self.w.session([("user", "Always run the linter before committing.")])
+        self.w.ingest("--session", s1)
+        self.w.ingest("--session", s2)
+        self.w.ingest("--nightly")
+        records = json.loads((self.w.wiki / "misc" / "rule-candidates.json").read_text())["proposals"]
+        record = next(r for r in records if len(r["occurrences"]) >= 2)
+        readme = self.w.wiki / "misc" / "README.md"
+        readme.write_text("# misc\n")
+        git(self.w.wiki, "add", "misc/README.md")
+        git(self.w.wiki, "commit", "-qm", "test: reset README")
+        readme.write_text(readme.read_text() + "- user note in README\n")
+        r = self.w.ingest("proposals", "accept", record["id"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        committed = git(self.w.wiki, "show", "HEAD:misc/README.md")
+        self.assertIn("- [rule-candidates](rule-candidates.md)", committed)
+        self.assertNotIn("user note in README", committed)
+        self.assertIn("user note in README", readme.read_text())
+        self.assertIn("M misc/README.md", git(self.w.wiki, "status", "--porcelain"))
+
+    def test_proposals_accept_preserves_staged_readme_with_generated_link(self):
+        s1 = self.w.session([("user", "Always run the linter before committing.")])
+        s2 = self.w.session([("user", "Always run the linter before committing.")])
+        self.w.ingest("--session", s1)
+        self.w.ingest("--session", s2)
+        self.w.ingest("--nightly")
+        records = json.loads((self.w.wiki / "misc" / "rule-candidates.json").read_text())["proposals"]
+        record = next(r for r in records if len(r["occurrences"]) >= 2)
+        readme = self.w.wiki / "misc" / "README.md"
+        readme.write_text("# misc\n")
+        git(self.w.wiki, "add", "misc/README.md")
+        git(self.w.wiki, "commit", "-qm", "test: reset README")
+        readme.write_text(readme.read_text() + "- user note in README\n")
+        git(self.w.wiki, "add", "misc/README.md")
+        r = self.w.ingest("proposals", "accept", record["id"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        committed = git(self.w.wiki, "show", "HEAD:misc/README.md")
+        self.assertIn("- [rule-candidates](rule-candidates.md)", committed)
+        self.assertNotIn("user note in README", committed)
+        self.assertIn("M  misc/README.md", git(self.w.wiki, "status", "--porcelain"))
+        self.assertIn("user note in README", readme.read_text())
+
+    def test_proposals_reject_does_not_commit_readme_user_change(self):
+        s1 = self.w.session([("user", "Always run the linter before committing.")])
+        s2 = self.w.session([("user", "Always run the linter before committing.")])
+        self.w.ingest("--session", s1)
+        self.w.ingest("--session", s2)
+        self.w.ingest("--nightly")
+        records = json.loads((self.w.wiki / "misc" / "rule-candidates.json").read_text())["proposals"]
+        record = next(r for r in records if len(r["occurrences"]) >= 2)
+        readme = self.w.wiki / "misc" / "README.md"
+        readme.write_text(readme.read_text() + "- user note in README\n")
+        git(self.w.wiki, "add", "misc/README.md")
+        r = self.w.ingest("proposals", "reject", record["id"], "not applicable")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        stat = git(self.w.wiki, "show", "--stat", "--oneline", "HEAD")
+        self.assertNotIn("misc/README.md", stat)
+        self.assertIn("Signed-off-by: test <test@example.com>", git(self.w.wiki, "show", "-s", "--format=%B", "HEAD"))
+        self.assertIn("M  misc/README.md", git(self.w.wiki, "status", "--porcelain"))
+        self.assertIn("user note in README", readme.read_text())
 
     def test_review_cannot_delete_a_protected_page(self):
         sid = self.w.session([("user", "The staging server SSH port is 2222.")])
