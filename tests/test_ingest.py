@@ -1,5 +1,6 @@
 """End-to-end runs of bin/ingest.py against a fake `claude` CLI (tests/fake-engine/claude)."""
 import json, sqlite3, time, unittest
+from pathlib import Path
 
 from helpers import TempWiki, git
 
@@ -78,6 +79,62 @@ class IngestZhTest(unittest.TestCase):
         self.assertIn(self.sid8, cand)
         self.assertEqual(self.db("reviewed")[self.sid], self.size())
         self.assertEqual(self.w.lint().returncode, 0)
+
+    def test_nightly_writes_machine_readable_diff_report(self):
+        self.w.ingest("--session", self.sid)
+        r = self.w.ingest("--nightly")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        report = json.loads((self.w.wiki / "state" / f"diff-{time.strftime('%Y-%m-%d')}.json").read_text())
+        self.assertEqual(report["schema"], 1)
+        self.assertGreaterEqual(report["summary"]["total"], 1)
+        self.assertIn("review diff report", " ".join(self.w.commits()))
+
+    def test_diff_engine_fixes_fabricated_attribution(self):
+        self.w.ingest("--session", self.sid, mode="bad-write")
+        r = self.w.ingest("--nightly", mode="bad-write")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        page = (self.w.wiki / "misc" / "demo-facts.md").read_text()
+        self.assertNotIn("用户定：", page)
+        report = json.loads((self.w.wiki / "state" / f"diff-{time.strftime('%Y-%m-%d')}.json").read_text())
+        bad = [c for c in report["changes"] if "用户定" in c["text"]]
+        self.assertEqual(len(bad), 1)
+        self.assertEqual(bad[0]["verdict"], "misattributed")
+        self.assertTrue(bad[0]["fixed"])
+        self.assertGreaterEqual(report["summary"]["fixed"], 1)
+
+    def test_proposals_cli_accept_and_reject(self):
+        self.w.ingest("--session", self.sid)
+        self.w.ingest("--nightly")
+        records = json.loads((self.w.wiki / "state" / "proposals.json").read_text())["proposals"]
+        self.assertTrue(records)
+        listed = self.w.ingest("proposals", "list")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn(records[0]["id"], listed.stdout)
+        target = self.w.home / ".claude" / "CLAUDE.md"
+        self.assertFalse(target.exists())
+        accepted = self.w.ingest("proposals", "accept", records[0]["id"])
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn("resident rule file not modified", accepted.stdout)
+        self.assertFalse(target.exists())  # accept only writes a patch
+        self.assertEqual(json.loads((self.w.wiki / "state" / "proposals.json").read_text())["proposals"][0]["status"],
+                         "accepted")
+        second = records[1]["id"]
+        rejected = self.w.ingest("proposals", "reject", second, "不适用")
+        self.assertEqual(rejected.returncode, 0, rejected.stderr)
+        word = "已否决" if self.language == "zh" else "Rejected"
+        self.assertIn(word, (self.w.wiki / "misc" / "rule-candidates.md").read_text())
+
+    def test_new_engines_can_be_disabled(self):
+        w = TempWiki(config={"language": self.language, "diff_engine": False, "proposal_engine": False})
+        self.addCleanup(w.cleanup)
+        sid = w.session(DEMO)
+        w.ingest("--session", sid)
+        r = w.ingest("--nightly")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"review {sid[:8]}", w.commits())
+        self.assertIn("dream 1 sessions", w.commits())
+        self.assertFalse((w.wiki / "state" / f"diff-{time.strftime('%Y-%m-%d')}.json").exists())
+        self.assertFalse((w.wiki / "state" / "proposals.json").exists())
 
     def test_dream_misquote_is_rejected(self):
         self.w.ingest("--session", self.sid)

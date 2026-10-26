@@ -77,6 +77,11 @@ class DeterministicTest(unittest.TestCase):
         c = de.check_changes([change("- 用户说「demo 用 … SQLite」")], self.TEXTS)[0]
         self.assertTrue(c["deterministic_ok"])
 
+    def test_explicit_missing_sid_does_not_fall_back_to_another_session(self):
+        c = de.check_changes([change("- 用户说 1234abcd「demo 用 SQLite」")], self.TEXTS)[0]
+        self.assertFalse(c["deterministic_ok"])
+        self.assertIn("quote not found", c["checks"][0]["detail"])
+
     def test_conflicting_numbers_on_two_pages(self):
         changes = [change("- 演示服务器 SSH 端口 2222")]
         conflicts = de.find_conflicts(changes, {"infra/server.md": "## Key facts\n- 演示服务器 SSH 端口 8080\n"})
