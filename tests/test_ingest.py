@@ -104,6 +104,9 @@ class IngestZhTest(unittest.TestCase):
 
     def test_proposals_cli_accept_and_reject(self):
         self.w.ingest("--session", self.sid)
+        # a second session with the same preference gives the candidate the two occurrences
+        # the Proposal Engine requires before it can be accepted
+        self.w.ingest("--session", self.w.session(DEMO))
         self.w.ingest("--nightly")
         records = json.loads((self.w.wiki / "misc" / "rule-candidates.json").read_text())["proposals"]
         self.assertTrue(records)
@@ -163,6 +166,103 @@ class IngestZhTest(unittest.TestCase):
 class IngestEnTest(IngestZhTest):
     """Runs the pipeline with language "en": English SOP prompts, English page sections."""
     language, key_section, task_word = "en", "## Key facts", "task"
+
+
+class RegressionTest(unittest.TestCase):
+    """Focused end-to-end regressions for the PR review findings."""
+
+    def setUp(self):
+        self.w = TempWiki(config={"language": "en"})
+        self.addCleanup(self.w.cleanup)
+
+    def db(self, table):
+        con = sqlite3.connect(self.w.wiki / ".ingest.sqlite")
+        try:
+            return dict(con.execute(f"select id, offset from {table}"))
+        finally:
+            con.close()
+
+    def test_nightly_survives_two_ingests_rewriting_the_same_page(self):
+        s1 = self.w.session([("user", "The staging server SSH port is 2222.")])
+        self.assertEqual(self.w.ingest("--session", s1).returncode, 0)
+        s2 = self.w.session([("user", "Correction: the staging server SSH port is 2223.")])
+        self.assertEqual(self.w.ingest("--session", s2).returncode, 0)
+        r = self.w.ingest("--nightly")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("REVERTED", self.w.log_text())
+        reviewed = self.db("reviewed")
+        self.assertIn(s1, reviewed)
+        self.assertIn(s2, reviewed)
+        page = (self.w.wiki / "misc" / "demo-facts.md").read_text()
+        self.assertIn("2223", page)
+        self.assertNotIn("2222", page)
+
+    def test_proposals_accept_does_not_commit_unrelated_staged_file(self):
+        s1 = self.w.session([("user", "Always run the linter before committing.")])
+        s2 = self.w.session([("user", "Always run the linter before committing.")])
+        self.w.ingest("--session", s1)
+        self.w.ingest("--session", s2)
+        self.w.ingest("--nightly")
+        records = json.loads((self.w.wiki / "misc" / "rule-candidates.json").read_text())["proposals"]
+        record = next(r for r in records if len(r["occurrences"]) >= 2)
+        (self.w.wiki / "misc" / "user-notes.md").write_text("# user notes\n- not for this commit\n")
+        git(self.w.wiki, "add", "misc/user-notes.md")
+        r = self.w.ingest("proposals", "accept", record["id"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        stat = git(self.w.wiki, "show", "--stat", "--oneline", "HEAD")
+        self.assertNotIn("user-notes.md", stat)
+        self.assertIn("A  misc/user-notes.md", git(self.w.wiki, "status", "--porcelain"))
+
+    def test_review_cannot_delete_a_protected_page(self):
+        sid = self.w.session([("user", "The staging server SSH port is 2222.")])
+        self.w.ingest("--session", sid)
+        r = self.w.ingest("--nightly", mode="delete-page")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.w.wiki / "misc" / "demo-facts.md").exists())
+        self.assertIn("diff scope", self.w.log_text())
+        self.assertNotIn(sid, self.db("reviewed"))
+
+    def test_review_cannot_extend_a_protected_line(self):
+        sid = self.w.session([("user", "The staging server SSH port is 2222.")])
+        self.w.ingest("--session", sid)
+        r = self.w.ingest("--nightly", mode="extend-line")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        page = (self.w.wiki / "misc" / "demo-facts.md").read_text()
+        self.assertIn("- The staging server SSH port is 2222.\n", page)
+        self.assertNotIn("2222.2", page)
+        self.assertIn("diff scope", self.w.log_text())
+
+    def test_proposals_list_json_is_parseable(self):
+        sid = self.w.session([("user", "Always run the linter before committing.")])
+        self.w.ingest("--session", sid)
+        self.w.ingest("--nightly")
+        r = self.w.ingest("proposals", "list", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIsInstance(json.loads(r.stdout), list)
+
+    def test_invalid_dream_candidates_are_retried_not_marked_done(self):
+        sid = self.w.session([("user", "Always run the linter before committing.")])
+        self.w.ingest("--session", sid)
+        r = self.w.ingest("--nightly", mode="dream-invalid")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn(sid, self.db("dreamed"))
+        self.assertIn("candidate without a draft", self.w.log_text())
+
+    def test_short_dream_quote_is_not_accepted(self):
+        sid = self.w.session([("user", "Always run the linter before committing.")])
+        self.w.ingest("--session", sid)
+        r = self.w.ingest("--nightly", mode="dream-short")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("dream 1 sessions", self.w.commits())
+        self.assertIn("quotes not found among the USER lines", self.w.log_text())
+        self.assertNotIn(sid, self.db("dreamed"))
+
+    def test_nightly_log_lists_todos(self):
+        sid = self.w.session([("user", "The staging server SSH port is 2222.")])
+        self.w.ingest("--session", sid, mode="todo-write")
+        r = self.w.ingest("--nightly", mode="todo-write")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Diff todos", (self.w.wiki / "log.md").read_text())
 
 
 class RemoteTest(unittest.TestCase):

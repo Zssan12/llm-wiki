@@ -23,6 +23,7 @@ Configuration: optional `config.json` next to MEMORY.md (see config.example.json
 Every numeric constant below is carried over unchanged from the deployment this tool was extracted from.
 """
 import argparse, calendar, fcntl, json, os, re, sqlite3, subprocess, sys, tempfile, time
+from collections import Counter
 from pathlib import Path
 
 # `python3 -I` (used by the hook and tests) does not put the script directory on sys.path.
@@ -1233,8 +1234,51 @@ def day_writes(sids, since):
     return out[:40_000] + "\n…(truncated)" if len(out) > 40_000 else out
 
 
+def _page_line_positions(root, relative):
+    """Map each stripped page line to the 1-based line numbers where it occurs."""
+    path = Path(root) / relative
+    if not path.exists():
+        return None
+    positions = {}
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        positions.setdefault(line.strip(), []).append(number)
+    return positions
+
+
+def keep_current_changes(changes, root=None):
+    """Drop added lines a later ingest commit in the same window already replaced.
+
+    ``day_changes`` collects every + line from every ingest commit in the review
+    window. When the same page is ingested twice in one day, the first commit's
+    line may no longer be in HEAD (the second commit corrected or deleted it).
+    That intermediate line is not a fact the review can protect; keeping it made
+    ``diff_scope_check`` reject every nightly run forever (PR review P1). Match
+    whole lines, not substrings, and assign the line number in the current page.
+    """
+    root = Path(root) if root is not None else REPO
+    cache, kept = {}, []
+    for change in changes:
+        file = change["file"]
+        if file not in cache:
+            cache[file] = _page_line_positions(root, file)
+        positions = cache[file]
+        if not positions:
+            continue
+        at = positions.get(change["text"].strip())
+        if not at:
+            continue
+        current = dict(change)
+        current["line"] = at.pop(0)
+        kept.append(current)
+    return kept
+
+
 def day_changes(sids, since):
-    """Structured form of day_writes: one entry per added fact line, with file, line and sid8s."""
+    """Structured form of day_writes: one entry per added fact line, with file, line and sid8s.
+
+    Only lines still present in the current page are returned: an earlier line
+    replaced by a later ingest in the same window is already gone from HEAD and
+    must not be scope-checked against the review result."""
     commits = []
     # @0 matches nothing in git (0 reads as unset), so a never-reviewed batch uses @1
     for line in git("log", f"--since=@{max(int(since), 1)}", "--format=%H %s", "--grep=^ingest ", cwd=REPO).splitlines():
@@ -1244,7 +1288,7 @@ def day_changes(sids, since):
     if not commits:
         return []
     out = git("show", "--unified=0", "--format=tformat:=== %h %s", *commits, "--", "*.md", ":!log.md", cwd=REPO)
-    return diff_engine.parse_git_show(out)
+    return keep_current_changes(diff_engine.parse_git_show(out))
 
 
 def user_text_of(item):
@@ -1299,16 +1343,37 @@ def auto_fix_section(changes):
 
 
 def diff_scope_check(changes):
-    """Reject a review pass that rewrites a DAY WRITES line not cleared for auto-fix."""
+    """Reject a review pass that rewrites a DAY WRITES line not cleared for auto-fix.
+
+    Line-level: deleting ``- 端口 22`` is not hidden by a surviving ``- 端口 2222``.
+    A page that held any DAY WRITES change and disappeared entirely is an error
+    too.  ``changes`` has already been filtered to the lines present at review
+    start by ``day_changes``."""
+    files = {c["file"] for c in changes}
+    protected = [c for c in changes if c.get("action") != "auto-fix"]
+
     def check():
         errs = []
-        for c in changes:
-            if c.get("action") == "auto-fix":
+        by_file = {}
+        for c in protected:
+            by_file.setdefault(c["file"], []).append(c)
+        for file in files:
+            page = WORK / file
+            if not page.exists():
+                group = by_file.get(file, [])
+                if group:
+                    errs.append(f"diff scope: {file} was deleted; it holds {len(group)} DAY WRITES line(s) "
+                                f"not in AUTO-FIX")
+                else:
+                    errs.append(f"diff scope: {file} was deleted; the review may not delete wiki pages")
                 continue
-            page = WORK / c["file"]
-            if page.exists() and diff_engine.flatten(c["text"]) not in diff_engine.flatten(page.read_text()):
-                errs.append(f"diff scope: {c['file']}:{c['line']} is not in AUTO-FIX but its text was changed or "
-                            f"removed: {c['text'][:100]}")
+            counts = Counter(line.strip() for line in page.read_text().splitlines())
+            needed = Counter(c["text"].strip() for c in by_file.get(file, []))
+            for text, n in needed.items():
+                if counts.get(text, 0) < n:
+                    first = next(c for c in by_file[file] if c["text"].strip() == text)
+                    errs.append(f"diff scope: {file}:{first['line']} is not in AUTO-FIX but its text was changed or "
+                                f"removed: {first['text'][:100]}")
         return "\n".join(errs)
     return check
 
@@ -1317,7 +1382,8 @@ def mark_fixed(changes):
     for c in changes:
         if c.get("action") == "auto-fix":
             page = WORK / c["file"]
-            c["fixed"] = (not page.exists()) or diff_engine.flatten(c["text"]) not in diff_engine.flatten(page.read_text())
+            present = page.exists() and c["text"].strip() in {line.strip() for line in page.read_text().splitlines()}
+            c["fixed"] = page.exists() and not present
             if not c["fixed"]:
                 c["action"] = "todo"  # the fix did not land: keep it visible in the report
 
@@ -1336,11 +1402,14 @@ def record_diff_report(changes, conflicts, since):
 
 
 def append_diff_summary(report):
-    """Append the one-line summary to log.md and commit it (a script commit, not a model pass)."""
+    """Append the one-line summary and the human-readable todo list to log.md (a script commit)."""
     today = time.strftime("%Y-%m-%d")
     sync_work()
+    todos = diff_engine.todos_markdown(report, LANGUAGE)
     with open(WORK / "log.md", "a") as f:
         f.write(f"\n## [{today}] review | diff engine\n{diff_engine.summary_line(report, LANGUAGE)}\n")
+        if todos:
+            f.write("\n" + todos + "\n")
     return commit_script(f"review diff report {today}", kind="review")
 
 
@@ -1530,12 +1599,12 @@ def misquotes(said, base="HEAD"):
                 d = dialog(paths[sid], 0) if sid in paths else {"user": said.get(sid, ""), "days": []}
                 full[sid], days[sid] = flat(d["user"]), [(dd, flat(t)) for dd, t in d["days"]]
             text = full[sid]
-            frags = [flat(f) for f in re.split(r"…+|\.\.\.", tok.group(2)) if flat(f)]
-            missing = [f for f in frags if f not in text]
+            frags = diff_engine.quote_fragments(tok.group(2))
+            missing = [f for f in frags if not diff_engine.quote_matches(f, text)]
             if missing:
                 bad.append(f"{sid}「{tok.group(2)}」")
             elif day and days[sid] and frags:
-                said_on = {dd for dd, t in days[sid] if frags[0] in t}
+                said_on = {dd for dd, t in days[sid] if diff_engine.quote_matches(frags[0], t)}
                 if said_on and day not in said_on:  # models copy the batch date instead of the line's
                     wrong_day.append(f"{day} {sid}「{tok.group(2)}」 → {'/'.join(sorted(said_on))}")
     msg = []
@@ -1573,10 +1642,10 @@ def validate_dream_candidates(data, items):
             sid = str(o.get("sid8") or "").strip()[:8]
             quote = str(o.get("quote") or "").strip().strip("「」")
             day = str(o.get("date") or "").strip()
-            if sid not in texts or not quote or diff_engine.flatten(quote) not in texts[sid]:
+            if sid not in texts or not quote or not diff_engine.quote_matches(quote, texts[sid]):
                 bad.append(f"{sid or '?'}「{quote}」")
                 continue
-            matching_days = [d for d, t in days.get(sid, []) if diff_engine.flatten(quote) in t]
+            matching_days = [d for d, t in days.get(sid, []) if diff_engine.quote_matches(quote, t)]
             if day and matching_days and day not in matching_days:
                 bad.append(f"wrong date {day} {sid}「{quote}」 → {'/'.join(matching_days)}")
                 continue
@@ -1603,7 +1672,10 @@ def dream_structured_batch(batch, items, label, text):
     if problems:
         log(f"{label}: " + "; ".join(problems))
     if not valid:
-        return not any("quotes not found among the USER lines" in p for p in problems)
+        # No candidates at all is fine; structural problems (a missing draft, only
+        # unverifiable quotes) must leave the session un-dreamed so it is retried
+        # instead of silently dropping the model's output (PR review P3).
+        return not problems
     sync_work()
     store_path = WORK / PROPOSALS_REL
     old_store = store_path.read_text() if store_path.exists() else ""
@@ -1674,18 +1746,27 @@ def dream(db, deadline):
 
 
 def commit_repo_paths(label, paths):
-    """Commit a CLI-generated page update in REPO, without touching unrelated files."""
-    if not git("status", "--porcelain", "--", *paths, cwd=REPO):
+    """Commit a CLI-generated page update in REPO, without touching unrelated files.
+
+    ``git commit --only -- <paths>`` commits exactly those paths and leaves
+    everything else staged; a plain ``git commit`` would swallow the user's
+    unrelated staged work (PR review P1)."""
+    paths = [str(p) for p in paths]
+    if not paths or not git("status", "--porcelain", "--", *paths, cwd=REPO):
         return False
-    git("add", "--", *paths, cwd=REPO)
-    r = subprocess.run(["git", "commit", "-qm", label], cwd=REPO, capture_output=True, text=True)
+    r = subprocess.run(["git", "add", "--", *paths], cwd=REPO, capture_output=True, text=True)
+    if r.returncode:
+        log(f"{label} add failed: {(r.stderr or r.stdout).strip()[-300:]}")
+        return False
+    r = subprocess.run(["git", "commit", "--only", "-qm", label, "--", *paths],
+                       cwd=REPO, capture_output=True, text=True)
     if r.returncode:
         log(f"{label} commit failed: {(r.stderr or r.stdout).strip()[-300:]}")
         return False
     return True
 
 
-def proposals_cmd(argv):
+def proposals_cmd(argv, as_json=False):
     """`ingest.py proposals list | accept <id> | reject <id> [reason]`."""
     argv = list(argv)
     if argv and argv[0] == "proposals":  # the positional subcommand word is part of nargs="*"
@@ -1693,7 +1774,7 @@ def proposals_cmd(argv):
     cmd = argv[0] if argv else "list"
     store = proposal_engine.ProposalStore(PROPOSALS)
     if cmd in ("list", "ls"):
-        if "--json" in argv:
+        if as_json or "--json" in argv:
             print(json.dumps(store.records, ensure_ascii=False, indent=2, sort_keys=True))
         else:
             print(proposal_engine.list_text(store))
@@ -1712,6 +1793,8 @@ def proposals_cmd(argv):
                           [str(page.relative_to(REPO)), "misc/README.md", PROPOSALS_REL])
         print(f"accepted {record['id']} ({record['status']})")
         print(f"patch: {patch}")
+        if proposal_engine.normalize_target(record["target"])["kind"] == "rule":
+            print(f"apply from: {proposal_engine.patch_base(record['target'])}")
         print("resident rule file not modified; review the patch before applying it")
         return 0
     if cmd == "reject":
@@ -1765,11 +1848,12 @@ def main():
     # source: carried over (7 days by default)
     ap.add_argument("--usage", nargs="?", const=7, type=int, metavar="DAYS", help="token totals per day (default 7 days)")
     ap.add_argument("--hook", action="store_true")
+    ap.add_argument("--json", action="store_true", help="proposals list: JSON output")
     ap.add_argument("proposals", nargs="*", metavar="proposals",
                     help="list | accept <id> | reject <id> [reason]")
     a = ap.parse_args()
     if a.proposals:
-        sys.exit(proposals_cmd(a.proposals))
+        sys.exit(proposals_cmd(a.proposals, a.json))
     if a.hook:  # return at once: the hook has a timeout and the session is closing
         sid = json.load(sys.stdin).get("session_id")
         if sid and not os.environ.get("WIKI_INGEST"):
