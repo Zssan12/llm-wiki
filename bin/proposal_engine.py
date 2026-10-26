@@ -18,6 +18,7 @@ No model calls, no git commands: ``bin/ingest.py`` feeds this module and tests
 exercise it directly.
 """
 import difflib, hashlib, json, os, re, tempfile, time, unicodedata
+from collections import Counter
 from pathlib import Path
 
 SCHEMA = 1
@@ -26,6 +27,12 @@ STATUSES = ("open", "accepted", "rejected")
 MIN_OCCURRENCES = 2
 # source: lint.py BODY_LINE (300) minus the prefix/evidence budget; keeps generated lines valid.
 DRAFT_CLIP = 120
+# source: measured on the PR review's paraphrase pair ("先跑 lint 再提交" vs
+# "提交前先跑 lint": character-bigram Dice 0.75); the nearest distinct pair
+# measured 0.545, and numeric-only variants are excluded below.
+SYNONYM_DICE = 0.75
+# source: shorter drafts have too few character bigrams for a stable comparison.
+MIN_SYNONYM_CHARS = 6
 PAGE = "misc/rule-candidates.md"
 SCOPE = "rule candidates from dream, the user's accept/reject decisions, and proposal patches"
 
@@ -34,6 +41,28 @@ def normalize_key(text):
     """Normalized dedup key: NFKC, case-folded, punctuation and whitespace removed."""
     t = unicodedata.normalize("NFKC", text or "").lower()
     return re.sub(r"[\W_]+", "", t, flags=re.UNICODE)
+
+
+def _bigrams(text):
+    return [text[i:i + 2] for i in range(len(text) - 1)] or ([text] if text else [])
+
+
+def similar_draft(a, b):
+    """Conservative fallback for paraphrases the model gave different keys.
+
+    Character-bigram Dice similarity above ``SYNONYM_DICE``.  Drafts that
+    differ only in a number ("备份保留 7 天" / "备份保留 30 天") are rule
+    variants, not synonyms, so they never merge."""
+    a, b = normalize_key(a), normalize_key(b)
+    if not a or not b or a == b:
+        return a == b
+    if len(a) < MIN_SYNONYM_CHARS or len(b) < MIN_SYNONYM_CHARS:
+        return False
+    if re.search(r"\d", a + b) and re.sub(r"\d+", "", a) == re.sub(r"\d+", "", b):
+        return False
+    ca, cb = Counter(_bigrams(a)), Counter(_bigrams(b))
+    total = sum(ca.values()) + sum(cb.values())
+    return total > 0 and 2 * sum((ca & cb).values()) / total >= SYNONYM_DICE
 
 
 def candidate_id(key):
@@ -157,6 +186,16 @@ class ProposalStore:
             raise ValueError("candidate needs a draft or key")
         today = today or time.strftime("%Y-%m-%d")
         existing = next((r for r in self.records if r["key"] == key), None)
+        if not existing and draft:
+            # A model that changes the canonical key between nights must not split
+            # the same rule into two records; the verbatim draft is a safe fallback.
+            draft_key = normalize_key(draft)
+            existing = next((r for r in self.records if normalize_key(r.get("draft", "")) == draft_key), None)
+            if not existing:
+                wanted = normalize_target(target)
+                existing = next((r for r in self.records
+                                 if normalize_target(r.get("target")) == wanted
+                                 and similar_draft(draft, r.get("draft", ""))), None)
         if existing:
             existing["occurrences"] = _unique_occurrences(list(existing["occurrences"]) + list(occurrences))
             existing["updated"] = today
@@ -192,6 +231,9 @@ class ProposalStore:
             raise KeyError(proposal_id)
         if record["status"] == "rejected":
             raise ValueError(f"{proposal_id} was rejected; reject is final")
+        if record["status"] == "open" and len(record["occurrences"]) < MIN_OCCURRENCES:
+            raise ValueError(f"{proposal_id} has {len(record['occurrences'])} occurrence(s); "
+                             f"at least {MIN_OCCURRENCES} are needed before it can be accepted")
         patch_dir = Path(patch_dir)
         patch_dir.mkdir(parents=True, exist_ok=True)
         target = normalize_target(record["target"])
@@ -243,17 +285,27 @@ def insert_rule(text, section, draft, path="~/.claude/CLAUDE.md"):
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
+def patch_base(target):
+    """The directory the generated relative-path rule patch is applied from."""
+    return Path(os.path.expanduser(normalize_target(target)["file"])).parent
+
+
 def rule_patch(target, draft):
-    """Unified diff that adds one rule line; the resident file is only read."""
+    """Unified diff that adds one rule line; the resident file is only read.
+
+    Paths are relative to the target file's directory (``a/NAME``, ``b/NAME``),
+    so ``git apply --check`` works from the base printed by the CLI instead of
+    receiving an absolute path (PR review P2)."""
     target = normalize_target(target)
-    path = os.path.expanduser(target["file"])
+    path = Path(os.path.expanduser(target["file"]))
     old = Path(path).read_text() if os.path.exists(path) else ""
     new = insert_rule(old, target["section"], draft, target["file"])
     if old == new:
         return (f"# no change: the rule is already present in {target['file']}\n")
+    name = path.name
     diff = difflib.unified_diff(old.splitlines(True), new.splitlines(True),
-                                fromfile=target["file"] if old else "/dev/null",
-                                tofile=target["file"], n=3)
+                                fromfile="/dev/null" if not old else f"a/{name}",
+                                tofile=f"b/{name}", n=3)
     return "".join(diff)
 
 
@@ -284,7 +336,7 @@ def render_page(records, language="zh"):
     out = ["---", "name: rule-candidates", f"description: {description}", "metadata:", f"  scope: {scope}",
            "---", "# 规则候选" if zh else "# Rule candidates", ""]
     open_records = [r for r in records if r.get("status") == "open"]
-    once = [r for r in open_records if len(r["occurrences"]) < MIN_OCCURRENCES]
+    once = [r for r in open_records if 0 < len(r["occurrences"]) < MIN_OCCURRENCES]
     proposed = [r for r in open_records if len(r["occurrences"]) >= MIN_OCCURRENCES]
     accepted = [r for r in records if r.get("status") == "accepted"]
     rejected = [r for r in records if r.get("status") == "rejected"]

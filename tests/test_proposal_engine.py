@@ -1,5 +1,6 @@
 """Unit tests for bin/proposal_engine.py: dedup, threshold, reject and accept."""
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -92,11 +93,70 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(pe.ProposalStore(self.store.path).get(r["id"])["status"], "accepted")
 
     def test_accept_hook_writes_a_proposal_not_a_rule_patch(self):
-        r = self.store.add("提交前必须跑 lint", {"kind": "hook"}, [occ("10-25", "12345678", "先跑 lint")])
+        r = self.store.add("提交前必须跑 lint", {"kind": "hook"}, [occ("10-25", "12345678", "先跑 lint"),
+                                                                  occ("10-26", "87654321", "提交前必须跑 lint")])
         rec, path = self.store.accept(r["id"], self.root / "state" / "proposals")
         self.assertTrue(path.name.endswith(".proposal.md"))
         self.assertIn("hook", path.read_text())
         self.assertEqual(rec["status"], "accepted")
+
+    def test_accept_requires_two_occurrences(self):
+        r = self.store.add("只出现一次", None, [occ("10-25", "12345678", "只出现一次")])
+        with self.assertRaises(ValueError):
+            self.store.accept(r["id"], self.root / "state" / "proposals")
+        self.assertEqual(r["status"], "open")
+        self.store.add("只出现一次", None, [occ("10-26", "87654321", "只出现一次")])
+        rec, _ = self.store.accept(r["id"], self.root / "state" / "proposals")
+        self.assertEqual(rec["status"], "accepted")
+
+    def test_same_draft_with_different_keys_merges(self):
+        r1 = self.store.add("先跑 lint 再提交", None, [occ("10-25", "12345678", "先跑 lint 再提交")],
+                            key="lint-first")
+        r2 = self.store.add("先跑 lint 再提交", None, [occ("10-26", "87654321", "先跑 lint 再提交")],
+                            key="lint-before-commit")
+        self.assertIs(r1, r2)
+        self.assertEqual(len(r2["occurrences"]), 2)
+
+    def test_same_canonical_key_merges_different_wording(self):
+        r1 = self.store.add("先跑 lint 再提交", None, [occ("10-25", "12345678", "先跑 lint 再提交")],
+                            key="lint-first")
+        r2 = self.store.add("提交前先跑 lint", None, [occ("10-26", "87654321", "提交前先跑 lint")],
+                            key="lint-first")
+        self.assertIs(r1, r2)
+        self.assertEqual(len(r2["occurrences"]), 2)
+
+    def test_different_wording_without_shared_key_merges(self):
+        r1 = self.store.add("先跑 lint 再提交", None, [occ("10-25", "12345678", "先跑 lint 再提交")],
+                            key="lint-first")
+        r2 = self.store.add("提交前先跑 lint", None, [occ("10-26", "87654321", "提交前先跑 lint")],
+                            key="lint-before-commit")
+        self.assertIs(r1, r2)
+        self.assertEqual(len(r2["occurrences"]), 2)
+
+    def test_numeric_rule_variants_do_not_merge(self):
+        r1 = self.store.add("备份保留 7 天", None, [occ("10-25", "12345678", "备份保留 7 天")], key="backup-7")
+        r2 = self.store.add("备份保留 30 天", None, [occ("10-26", "87654321", "备份保留 30 天")], key="backup-30")
+        self.assertIsNot(r1, r2)
+        self.assertEqual(len(self.store.records), 2)
+
+    def test_render_page_skips_zero_occurrence_record(self):
+        self.store.add("空候选", None, [])
+        page = pe.render_page(self.store.records, "zh")
+        self.assertNotIn("空候选", page)
+
+    def test_rule_patch_applies_from_its_base(self):
+        target = self.root / "home" / ".claude" / "CLAUDE.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# Rules\n\n## 工作规矩\n- 已有规则\n")
+        r = self.store.add("先跑 lint 再提交", {"kind": "rule", "file": str(target), "section": "工作规矩"},
+                           [occ("10-25", "12345678", "先跑 lint"), occ("10-26", "87654321", "先跑 lint 再提交")])
+        _rec, patch = self.store.accept(r["id"], self.root / "state" / "proposals")
+        text = patch.read_text()
+        self.assertIn("--- a/CLAUDE.md", text)
+        self.assertIn("+++ b/CLAUDE.md", text)
+        check = subprocess.run(["git", "apply", "--check", str(patch)], cwd=target.parent,
+                               capture_output=True, text=True)
+        self.assertEqual(check.returncode, 0, check.stderr)
 
     def test_rejected_cannot_be_accepted(self):
         r = self.store.add("x", None, [occ("10-25", "12345678", "x")])
