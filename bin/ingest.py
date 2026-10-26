@@ -702,7 +702,7 @@ def extract(path, offset, stop=None):
         f.seek(offset)
         data = f.read(stop - offset if stop else -1)
     end = data.rfind(b"\n") + 1
-    out, prompts, cwd, title = [], 0, None, None
+    out, user_messages, prompts, cwd, title = [], [], 0, None, None
     for line in data[:end].splitlines():
         try:
             d = json.loads(line)
@@ -727,16 +727,19 @@ def extract(path, offset, stop=None):
                     continue
                 prompts += 1  # any record: a cron-only session still holds Claude's work worth ingesting
                 out.append(f"USER: {text}")
+                user_messages.append(text)
             elif b.get("type") == "tool_use":  # commands often carry the facts (hosts, paths)
                 inp = b.get("input", {})
                 arg = inp.get("command") or inp.get("file_path") or inp.get("query") or ""
                 if arg:
                     out.append(f"[{b.get('name')}] {str(arg)[:300]}")
-    for line in open(path, "rb"):  # title is often written after the delta starts
-        if b'"ai-title"' in line:
-            title = json.loads(line).get("aiTitle")
-    text = SECRET.sub(lambda m: (m.group(3) or "") + "[REDACTED]", "\n\n".join(out))
-    return {"text": text, "end": offset + end, "prompts": prompts, "cwd": cwd, "title": title}
+    with open(path, "rb") as f:  # title is often written after the delta starts
+        for line in f:
+            if b'"ai-title"' in line:
+                title = json.loads(line).get("aiTitle")
+    redact = lambda t: SECRET.sub(lambda m: (m.group(3) or "") + "[REDACTED]", t)
+    return {"text": redact("\n\n".join(out)), "user": redact("\n\n".join(user_messages)),
+            "end": offset + end, "prompts": prompts, "cwd": cwd, "title": title}
 
 
 def record_usage(label, res):
@@ -1245,7 +1248,14 @@ def day_changes(sids, since):
 
 
 def user_text_of(item):
-    """Only the USER lines of an extract() item, the source for quote checks."""
+    """The USER messages of an extract() item, the source for quote checks.
+
+    ``extract`` keeps every message whole in ``user``: only the first physical line
+    of a multi-line user message carries the "USER: " transcript prefix, so splitting
+    ``text`` on that prefix would drop all continuation lines.  The fallback serves
+    callers that hand in a bare ``text``."""
+    if "user" in item:
+        return item["user"]
     return "\n".join(line[len("USER: "):] for line in item.get("text", "").splitlines()
                      if line.startswith("USER: "))
 
