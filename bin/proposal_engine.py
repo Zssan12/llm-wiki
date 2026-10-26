@@ -37,11 +37,22 @@ MIN_SYNONYM_CHARS = 6
 # If either draft carries a negation, only an exact canonical key may merge it;
 # the approximate fallback must stay conservative because it cannot understand
 # which side of the rule a negation changes.
-NEGATION_ZH = ("不要", "不能", "不得", "不用", "不必", "不需", "不准", "不许", "不可",
-               "不该", "不应", "无需", "禁止", "切勿", "别", "勿", "未", "没", "不")
+# source: PR review P2 — single-character 不/未/别 misread positive words such as
+# 不同/未来/特别/不错 as negation.  Match negation words or phrases; 别 only at a
+# clause start, so 特别/别人/个别 stay positive.
+NEGATION_ZH = re.compile(
+    r"(?:不要|不能|不得|不用|不必|不需|不准|不许|不可|不该|不应|不建议|不推荐|不允许|"
+    r"无需|禁止|切勿|勿|严禁|避免|尚未|并未|从未|还未|未能|没有|千万别|别忘记)"
+    r"|(?:^|[，。；：、！？\s])别(?!人|的|处|致|墅|称|名)")
 NEGATION_EN = re.compile(
     r"\b(?:not|never|no|none|without|cannot|can't|don't|doesn't|didn't|shouldn't|"
     r"mustn't|won't|wouldn't|isn't|aren't|avoid)\b", re.IGNORECASE)
+# source: PR review P2 — HTTPS/HTTP differ by one technical token but are opposite
+# rules; the approximate fallback must require such key tokens to match exactly.
+KEY_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9]*(?://[^\s]+)?")
+# source: PR review P2 — Chinese structural particles do not change a rule's meaning
+# (不同项目使用不同的端口 / 不同项目使用不同端口; 特别小心地备份 / 特别小心备份).
+SIMILARITY_PARTICLES = re.compile(r"[的地得了]")
 PAGE = "misc/rule-candidates.md"
 SCOPE = "rule candidates from dream, the user's accept/reject decisions, and proposal patches"
 
@@ -62,7 +73,21 @@ def has_negation(text):
     The approximate fallback cannot tell which side a negation flips, so the
     caller must not merge such drafts unless their canonical keys are equal."""
     raw = str(text or "").lower()
-    return any(word in raw for word in NEGATION_ZH) or bool(NEGATION_EN.search(raw))
+    return bool(NEGATION_ZH.search(raw) or NEGATION_EN.search(raw))
+
+
+def _key_tokens(text):
+    """Technical tokens (acronyms, numbers, URLs) that must match exactly."""
+    tokens = set()
+    for raw in KEY_TOKEN.findall(unicodedata.normalize("NFKC", str(text or ""))):
+        token = raw.rstrip(".,;:!?)]}\"'")
+        if "://" in token:
+            tokens.add(token.lower())
+        elif token.isupper() and len(token) >= 2:
+            tokens.add(token)
+        elif any(ch.isdigit() for ch in token):
+            tokens.add(token.lower())
+    return tokens
 
 
 def similar_draft(a, b):
@@ -72,13 +97,23 @@ def similar_draft(a, b):
     differ only in a number ("备份保留 7 天" / "备份保留 30 天") are rule
     variants, not synonyms, so they never merge.  Negated drafts (要/不要,
     Always/Never) never merge by similarity: opposite rules look deceptively
-    alike and the fallback cannot infer the intended polarity."""
+    alike and the fallback cannot infer the intended polarity.  Technical key
+    tokens (HTTPS/HTTP, URLs, numbers) must match exactly, and Chinese
+    structural particles are ignored before the Dice comparison."""
     raw_a, raw_b = str(a or ""), str(b or "")
     a, b = normalize_key(a), normalize_key(b)
     if not a or not b or a == b:
         return a == b
     if has_negation(raw_a) or has_negation(raw_b):
         return False
+    if _key_tokens(raw_a) != _key_tokens(raw_b):
+        return False
+    a = SIMILARITY_PARTICLES.sub("", a)
+    b = SIMILARITY_PARTICLES.sub("", b)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
     if len(a) < MIN_SYNONYM_CHARS or len(b) < MIN_SYNONYM_CHARS:
         return False
     if re.search(r"\d", a + b) and re.sub(r"\d+", "", a) == re.sub(r"\d+", "", b):

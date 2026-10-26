@@ -1782,6 +1782,21 @@ def _work_text(path):
     return p.read_text() if p.exists() else None
 
 
+def require_readme_not_deleted():
+    """Refuse accept/reject when the user deleted misc/README.md but HEAD has it.
+
+    ``publish()`` calls ``ensure_registered()``, which would recreate the file and
+    silently discard the user's deletion (PR review P1).  The user must restore
+    the file or commit the deletion before deciding a proposal."""
+    path = "misc/README.md"
+    head = _git_text(path)
+    if head is None:
+        return
+    if _index_text(path) is None or _work_text(path) is None:
+        raise RuntimeError(f"{path} is deleted in the index or working tree; "
+                           "restore it or commit the deletion before accept/reject")
+
+
 def _git_blob(text):
     return _git_run(["hash-object", "-w", "--stdin"], input=text).strip()
 
@@ -1907,6 +1922,7 @@ def proposals_cmd(argv, as_json=False):
             print("usage: ingest.py proposals accept <id>", file=sys.stderr)
             return 2
         try:
+            require_readme_not_deleted()
             require_clean_generated_paths([proposal_engine.PAGE, PROPOSALS_REL])
         except RuntimeError as e:
             print(f"error: {e}", file=sys.stderr)
@@ -1935,6 +1951,7 @@ def proposals_cmd(argv, as_json=False):
             print("usage: ingest.py proposals reject <id> [reason]", file=sys.stderr)
             return 2
         try:
+            require_readme_not_deleted()
             require_clean_generated_paths([proposal_engine.PAGE, PROPOSALS_REL])
         except RuntimeError as e:
             print(f"error: {e}", file=sys.stderr)

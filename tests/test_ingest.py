@@ -182,6 +182,20 @@ class RegressionTest(unittest.TestCase):
         finally:
             con.close()
 
+    def proposal_fixture(self):
+        """Make one accepted-eligible proposal and return its record."""
+        s1 = self.w.session([("user", "Always run the linter before committing.")])
+        s2 = self.w.session([("user", "Always run the linter before committing.")])
+        self.w.ingest("--session", s1)
+        self.w.ingest("--session", s2)
+        self.w.ingest("--nightly")
+        records = json.loads((self.w.wiki / "misc" / "rule-candidates.json").read_text())["proposals"]
+        return next(r for r in records if len(r["occurrences"]) >= 2)
+
+    def proposal_status(self, proposal_id):
+        records = json.loads((self.w.wiki / "misc" / "rule-candidates.json").read_text())["proposals"]
+        return next(r for r in records if r["id"] == proposal_id)["status"]
+
     def test_nightly_survives_two_ingests_rewriting_the_same_page(self):
         s1 = self.w.session([("user", "The staging server SSH port is 2222.")])
         self.assertEqual(self.w.ingest("--session", s1).returncode, 0)
@@ -310,6 +324,54 @@ class RegressionTest(unittest.TestCase):
         self.assertIn("Signed-off-by: test <test@example.com>", git(self.w.wiki, "show", "-s", "--format=%B", "HEAD"))
         self.assertIn("M  misc/README.md", git(self.w.wiki, "status", "--porcelain"))
         self.assertIn("user note in README", readme.read_text())
+
+    def test_proposals_accept_refuses_unstaged_readme_deletion(self):
+        record = self.proposal_fixture()
+        readme = self.w.wiki / "misc" / "README.md"
+        self.assertTrue(readme.exists())
+        readme.unlink()
+        r = self.w.ingest("proposals", "accept", record["id"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("misc/README.md", r.stderr)
+        self.assertIn("deleted", r.stderr)
+        self.assertFalse(readme.exists())
+        self.assertIn("D misc/README.md", git(self.w.wiki, "status", "--porcelain"))
+        self.assertEqual(self.proposal_status(record["id"]), "open")
+
+    def test_proposals_accept_refuses_staged_readme_deletion(self):
+        record = self.proposal_fixture()
+        readme = self.w.wiki / "misc" / "README.md"
+        self.assertTrue(readme.exists())
+        git(self.w.wiki, "rm", "-q", "misc/README.md")
+        r = self.w.ingest("proposals", "accept", record["id"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("misc/README.md", r.stderr)
+        self.assertIn("deleted", r.stderr)
+        self.assertFalse(readme.exists())
+        self.assertIn("D  misc/README.md", git(self.w.wiki, "status", "--porcelain"))
+        self.assertEqual(self.proposal_status(record["id"]), "open")
+
+    def test_proposals_reject_refuses_unstaged_readme_deletion(self):
+        record = self.proposal_fixture()
+        readme = self.w.wiki / "misc" / "README.md"
+        readme.unlink()
+        r = self.w.ingest("proposals", "reject", record["id"], "not applicable")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("deleted", r.stderr)
+        self.assertFalse(readme.exists())
+        self.assertIn("D misc/README.md", git(self.w.wiki, "status", "--porcelain"))
+        self.assertEqual(self.proposal_status(record["id"]), "open")
+
+    def test_proposals_reject_refuses_staged_readme_deletion(self):
+        record = self.proposal_fixture()
+        readme = self.w.wiki / "misc" / "README.md"
+        git(self.w.wiki, "rm", "-q", "misc/README.md")
+        r = self.w.ingest("proposals", "reject", record["id"], "not applicable")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("deleted", r.stderr)
+        self.assertFalse(readme.exists())
+        self.assertIn("D  misc/README.md", git(self.w.wiki, "status", "--porcelain"))
+        self.assertEqual(self.proposal_status(record["id"]), "open")
 
     def test_review_cannot_delete_a_protected_page(self):
         sid = self.w.session([("user", "The staging server SSH port is 2222.")])

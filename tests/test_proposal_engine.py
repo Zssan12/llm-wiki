@@ -139,6 +139,35 @@ class StoreTest(unittest.TestCase):
         self.assertIsNot(r1, r2)
         self.assertEqual(len(self.store.records), 2)
 
+    def test_keyword_variants_do_not_merge(self):
+        self.assertFalse(pe.similar_draft("Use HTTPS for all external URLs",
+                                          "Use HTTP for all external URLs"))
+        r1 = self.store.add("Use HTTPS for all external URLs", None,
+                            [occ("10-25", "12345678", "Use HTTPS for all external URLs")], key="https-urls")
+        r2 = self.store.add("Use HTTP for all external URLs", None,
+                            [occ("10-26", "87654321", "Use HTTP for all external URLs")], key="http-urls")
+        self.assertIsNot(r1, r2)
+        self.assertEqual(len(self.store.records), 2)
+
+    def test_positive_words_with_negation_characters_still_merge(self):
+        cases = [
+            ("不同项目使用不同端口", "不同项目使用不同的端口"),
+            ("特别小心地备份", "特别小心备份"),
+            ("未来的部署使用容器", "未来部署使用容器"),
+            ("不错的做法是先备份", "好的做法是先备份"),
+        ]
+        for a, b in cases:
+            with self.subTest(a=a):
+                self.assertFalse(pe.has_negation(a))
+                self.assertFalse(pe.has_negation(b))
+                self.assertTrue(pe.similar_draft(a, b))
+        self.assertFalse(pe.has_negation("别人提交前先跑 lint"))
+        self.assertFalse(pe.has_negation("个别项目使用不同端口"))
+        self.assertTrue(pe.has_negation("回答先给结论，不要解释原因"))
+        self.assertTrue(pe.has_negation("尚未运行迁移"))
+        self.assertTrue(pe.has_negation("别解释原因"))
+        self.assertTrue(pe.has_negation("Never run migrations at night"))
+
     def test_negated_rule_variants_do_not_merge(self):
         r1 = self.store.add("回答先给结论，再解释原因", None,
                             [occ("10-25", "12345678", "回答先给结论，再解释原因")], key="answer-then-explain")
