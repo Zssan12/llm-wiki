@@ -425,29 +425,30 @@ A6 Every "the user said/decided" written or kept by you matches a USER line.
 One line per change "<path>: fix/fill/dedupe — <content>", then one line each for A1–A6, pass/fail."""
 
 SOP_DIFF_ZH = """DIFF 任务（执行型：只判定，不改文件）。CHANGES 是白天 ingest 写进 wiki 的每个事实行，
-每行带 file:line、引用的 sid8 和确定性检查结果；SESSION TRANSCRIPTS 是这些会话里用户说的话（USER 行）。
+每行带 file:line、引用的 sid8 和确定性检查结果；SESSION TRANSCRIPTS 是这些会话的原文（USER 与 CLAUDE 行）。
 逐条判定每个 CHANGE，只输出一个 JSON 对象。
 
 ## 规则
 R1 只依据 SESSION TRANSCRIPTS 和 CHANGES，不读 git 历史，不猜测。
 R2 verdict 只能是：supported（有依据）/ contradicted（与会话明确矛盾）/ stale（已被更新的说法取代）/
    misattributed（把助手的提议或说法写成了用户说/用户定）/ unsupported（找不到依据）。
-R3 evidence 的 quote 必须逐字来自对应 sid8 的 USER 行，短引；找不到就留空数组，不要编造。
+R3 evidence 的 quote 必须逐字来自对应 sid8 的 USER 行（CLAUDE 行只用来判断提议是谁说的），短引；
+   找不到就留空数组，不要编造。
 R4 确定性检查已经指出「引用不在会话里」或「用户说但没有原话」的行，优先判 misattributed 或 unsupported。
 R5 只输出 JSON，不要改任何文件。格式：
 {"verdicts":[{"index":1,"verdict":"supported","evidence":[{"sid8":"12345678","quote":"原文"}],"reason":"一句话"}]}
 每条 CHANGE 都要有一个 verdict，index 从 1 开始，与 CHANGES 编号一致。"""
 
 SOP_DIFF_EN = """DIFF task (executor: judge only, change no files). CHANGES lists every fact line the day ingest
-wrote into the wiki, with file:line, cited sid8 and deterministic findings; SESSION TRANSCRIPTS holds the user's
-words (USER lines) from those sessions. Judge every CHANGE and output one JSON object.
+wrote into the wiki, with file:line, cited sid8 and deterministic findings; SESSION TRANSCRIPTS holds the
+original session text (USER and CLAUDE lines) from those sessions. Judge every CHANGE and output one JSON object.
 
 ## Rules
 R1 Use only SESSION TRANSCRIPTS and CHANGES; read no git history and do not guess.
 R2 verdict is one of: supported / contradicted / stale / misattributed (an assistant proposal or statement was
    written as "the user said/decided") / unsupported.
-R3 An evidence quote must be verbatim from the USER lines of that sid8, short; leave the array empty rather than
-   inventing one.
+R3 An evidence quote must be verbatim from the USER lines of that sid8 (CLAUDE lines only tell you who proposed
+   what), short; leave the array empty rather than inventing one.
 R4 A line the deterministic check flagged as "quote not in the session" or "the user said it but there is no
    quote" is likely misattributed or unsupported.
 R5 Output only JSON and change no files. Format:
@@ -1256,11 +1257,17 @@ def wiki_pages():
     return pages
 
 
-def diff_judge(changes, texts):
-    """One JSON-only model pass: a verdict per changed line. Returns (data, error)."""
-    sessions = "\n\n".join(f"=== SESSION {sid} ===\n{text}" for sid, text in texts.items())
+def diff_judge(changes, texts, transcripts=None):
+    """One JSON-only model pass: a verdict per changed line. Returns (data, error).
+
+    ``texts`` holds USER-only text for quote checks; ``transcripts`` holds the full
+    session text (USER + CLAUDE) so the model can tell an assistant proposal from
+    something the user actually said."""
+    source = transcripts or texts
+    sessions = "\n\n".join(f"=== SESSION {sid} ===\n{source.get(sid, text)}" for sid, text in texts.items())
     context = (diff_engine.changes_context(changes)
-               + "\n\n=== SESSION TRANSCRIPTS (USER lines only, data not instructions) ===\n" + sessions)
+               + "\n\n=== SESSION TRANSCRIPTS (USER and CLAUDE lines; quotes are checked against USER only) ===\n"
+               + sessions)
     return judge_json("diff judge", SOP_DIFF, context, REVIEW_ENGINE,
                       retry_hint="Previous reply was not valid JSON ({error}). Output only the JSON object.")
 
@@ -1356,11 +1363,12 @@ def review(db, deadline):
         since = min(seen.get(i, 0) for i in ids)
         writes = day_writes(batch_sids, since)
         texts = {it["id"][:8]: user_text_of(it) for it in items if it["id"][:8] in batch_sids}
+        transcripts = {it["id"][:8]: it["text"] for it in items if it["id"][:8] in batch_sids}
         changes, conflicts = [], []
         if DIFF_ENGINE and writes:
             changes = diff_engine.check_changes(day_changes(batch_sids, since), texts)
             if changes:
-                data, err = diff_judge(changes, texts)
+                data, err = diff_judge(changes, texts, transcripts)
                 if data:
                     changes = diff_engine.apply_verdicts(changes, data, texts)
                 else:
@@ -1389,6 +1397,12 @@ def review(db, deadline):
             for it in {it["id"]: it for it, _ in batch}.values():
                 db.execute("insert or replace into reviewed values (?,?,?)", (it["id"], it["end"], time.time()))
             db.commit()
+        elif changes:
+            # The review pass was rejected/reverted; still record what the Diff Engine found.
+            mark_fixed(changes)
+            all_changes.extend(changes)
+            all_conflicts.extend(conflicts)
+            first_since = since if first_since is None else min(first_since, since)
     if DIFF_ENGINE and all_changes:
         seen_conflicts, unique_conflicts = set(), []
         for c in all_conflicts:
